@@ -1,4 +1,4 @@
-import { generateWithConsensus } from "./agent/llm/index.js";
+import { generateWithConsensus, getAvailableAuditProviders } from "./agent/llm/index.js";
 import type { SecurityAuditFinding, SecurityAuditReport } from "./types.js";
 
 const MAX_SOURCE_LENGTH = 200_000;
@@ -32,7 +32,7 @@ export async function runAudit(source: string): Promise<SecurityAuditReport> {
     summary?: string;
     riskRating?: SecurityAuditReport["riskRating"];
     findings?: Partial<SecurityAuditFinding>[];
-  }>(SYSTEM_PROMPT, `Audit this Solidity contract. Return the exact JSON structure requested above.\n\nSolidity source:\n${normalizedSource}`, 8000);
+  }>(SYSTEM_PROMPT, `Audit this Solidity contract. Return the exact JSON structure requested above.\n\nSolidity source:\n${normalizedSource}`, 8000, getAvailableAuditProviders());
   if (!result.primary) throw new Error("No configured LLM could complete the security audit");
 
   const riskRatings = new Set(["critical", "high", "medium", "low", "info"]);

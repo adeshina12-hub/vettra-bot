@@ -15,13 +15,16 @@ export const config = {
     geminiApiKey: required("GEMINI_API_KEY"),
     chainGptApiKey: required("CHAIN_GPT_API_KEY"),
     geminiModel: required("GEMINI_MODEL", "gemini-3.6-flash"),
-    chainGptModel: required("CHAIN_GPT_MODEL", "general_assistant"),
+    chainGptResearchModel: required("CHAIN_GPT_RESEARCH_MODEL", "general_assistant"),
+    chainGptAuditModel: required("CHAIN_GPT_AUDIT_MODEL", "smart_contract_auditor"),
+    chainGptEnabled: required("CHAIN_GPT_ENABLED", "true").toLowerCase() === "true",
     dailySpendCapUsd: Number(required("LLM_DAILY_SPEND_CAP_USD", "5")),
     estimatedCallCostUsd: Number(required("LLM_ESTIMATED_CALL_COST_USD", "0.05")),
   },
 
   bot: {
     dailyReportLimit: Number(required("BOT_DAILY_REPORT_LIMIT", "5")),
+    dailyEarlyScanLimit: Number(required("BOT_DAILY_EARLY_SCAN_LIMIT", "2")),
     cacheMinutes: Number(required("BOT_REPORT_CACHE_MINUTES", "60")),
     analyticsAdminChatId: required("BOT_ANALYTICS_ADMIN_CHAT_ID"),
   },
@@ -64,6 +67,7 @@ export const config = {
 
   moni: {
     apiKey: required("MONI_API_KEY"),
+    dailyRequestCap: Number(required("MONI_DAILY_REQUEST_CAP", "20")),
   },
 
   dashboardPort: Number(required("DASHBOARD_PORT", "4000")),

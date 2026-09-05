@@ -96,9 +96,12 @@ create table if not exists bot_research_events (
   id bigint generated always as identity primary key,
   telegram_user_id bigint not null,
   query_normalized text not null,
+  event_type text not null default 'research',
   cached boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+alter table bot_research_events add column if not exists event_type text not null default 'research';
 
 create index if not exists bot_research_events_created_at_idx
   on bot_research_events (created_at desc);
@@ -159,6 +162,67 @@ begin
 
   insert into bot_research_events(telegram_user_id, query_normalized, cached)
   values (requested_user_id, requested_query, false);
+  return true;
+end;
+$$;
+
+create or replace function claim_bot_action(
+  requested_user_id bigint,
+  requested_query text,
+  requested_event_type text,
+  daily_limit integer
+) returns boolean
+language plpgsql
+as $$
+begin
+  perform pg_advisory_xact_lock(hashtext('vettra-bot-' || requested_event_type || '-' || requested_user_id::text));
+  if (
+    select count(*) from bot_research_events
+    where telegram_user_id = requested_user_id
+      and event_type = requested_event_type
+      and created_at >= date_trunc('day', now())
+  ) >= daily_limit then
+    return false;
+  end if;
+
+  insert into bot_research_events(telegram_user_id, query_normalized, event_type, cached)
+  values (requested_user_id, requested_query, requested_event_type, false);
+  return true;
+end;
+$$;
+
+create table if not exists external_api_usage (
+  id bigint generated always as identity primary key,
+  provider text not null,
+  estimated_requests integer not null default 1,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists external_api_usage_provider_created_at_idx
+  on external_api_usage (provider, created_at desc);
+
+create or replace function reserve_external_api_requests(
+  requested_provider text,
+  requested_count integer,
+  daily_cap integer
+) returns boolean
+language plpgsql
+as $$
+declare
+  current_requests integer;
+begin
+  perform pg_advisory_xact_lock(hashtext('vettra-api-' || requested_provider));
+  select coalesce(sum(estimated_requests), 0) into current_requests
+  from external_api_usage
+  where provider = requested_provider
+    and created_at >= date_trunc('day', now());
+
+  if current_requests + requested_count > daily_cap then
+    return false;
+  end if;
+
+  insert into external_api_usage(provider, estimated_requests)
+  values (requested_provider, requested_count);
   return true;
 end;
 $$;

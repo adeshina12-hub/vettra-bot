@@ -1,4 +1,4 @@
-import { generateWithConsensus } from "./agent/llm/index.js";
+import { generateWithConsensus, getAvailableAuditProviders } from "./agent/llm/index.js";
 const MAX_SOURCE_LENGTH = 200_000;
 const DISCLAIMER = "AI-assisted review only. This is not a formal security audit and must not be the sole basis for deploying a contract.";
 const SYSTEM_PROMPT = `You are a senior smart-contract security auditor. Review Solidity code defensively and report only issues supported by the source. Return valid JSON only, with this exact shape:
@@ -23,7 +23,7 @@ export async function runAudit(source) {
         throw new Error("Contract source is required");
     if (normalizedSource.length > MAX_SOURCE_LENGTH)
         throw new Error(`Contract source is too large (maximum ${MAX_SOURCE_LENGTH} characters)`);
-    const result = await generateWithConsensus(SYSTEM_PROMPT, `Audit this Solidity contract. Return the exact JSON structure requested above.\n\nSolidity source:\n${normalizedSource}`, 8000);
+    const result = await generateWithConsensus(SYSTEM_PROMPT, `Audit this Solidity contract. Return the exact JSON structure requested above.\n\nSolidity source:\n${normalizedSource}`, 8000, getAvailableAuditProviders());
     if (!result.primary)
         throw new Error("No configured LLM could complete the security audit");
     const riskRatings = new Set(["critical", "high", "medium", "low", "info"]);

@@ -22,8 +22,17 @@ export class GeminiProvider implements LLMProvider {
       },
     });
 
-    const result = await model.generateContent(userPrompt);
-    const text = result.response.text();
-    return parseJsonLoose<T>(text);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const result = await model.generateContent(userPrompt);
+        return parseJsonLoose<T>(result.response.text());
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        if (![429, 500, 502, 503, 504].includes(status ?? 0) || attempt === 2) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** attempt));
+      }
+    }
+
+    return null;
   }
 }

@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { reserveExternalApiRequests } from "../storage/db.js";
 
 export interface EarlyCandidate {
   key: string;
@@ -48,6 +49,9 @@ export interface EarlyScanResult {
 }
 
 const MONI_URL = "https://api.discover.getmoni.io/api/v3/projects/";
+let moniCache: EarlyCandidate[] | null = null;
+let moniCacheAt = 0;
+const MONI_CACHE_MS = 15 * 60_000;
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 15_000): Promise<Response> {
   const controller = new AbortController();
@@ -82,6 +86,9 @@ function handleFromUrl(value: unknown): string | undefined {
 
 async function discoverMoni(): Promise<EarlyCandidate[]> {
   if (!config.moni.apiKey) throw new Error("MONI_API_KEY is not configured");
+  if (moniCache && Date.now() - moniCacheAt < MONI_CACHE_MS) return moniCache;
+  const allowed = await reserveExternalApiRequests("moni", 1, config.moni.dailyRequestCap);
+  if (!allowed) throw new Error(`Moni daily request cap reached (${config.moni.dailyRequestCap})`);
   const params = new URLSearchParams({
     feedTimeframe: process.env.MONI_FEED_TIMEFRAME ?? "D30",
     changesTimeframe: "H24",
@@ -95,7 +102,7 @@ async function discoverMoni(): Promise<EarlyCandidate[]> {
   const response = await fetchWithTimeout(`${MONI_URL}?${params}`, { headers: { "Api-Key": config.moni.apiKey, Accept: "application/json" } });
   if (!response.ok) throw new Error(`Moni discovery failed: ${response.status}`);
   const payload = await response.json() as { items?: any[] };
-  return (payload.items ?? []).flatMap((item): EarlyCandidate[] => {
+  moniCache = (payload.items ?? []).flatMap((item): EarlyCandidate[] => {
     const meta = item.meta ?? {};
     const engagement = item.smartEngagement ?? {};
     const profile = item.smartProfile ?? {};
@@ -116,6 +123,8 @@ async function discoverMoni(): Promise<EarlyCandidate[]> {
       chain: tags(profile.chains).join(", "), url: meta.userUrl, repoTopics: [],
     }];
   });
+  moniCacheAt = Date.now();
+  return moniCache;
 }
 
 /* Disabled while testing Moni qualification only.
@@ -195,7 +204,8 @@ function buildMoniScore(candidate: EarlyCandidate): EarlyScore {
 
 export async function findEarlyProjects(limit = 3): Promise<EarlyScanResult> {
   const [moniResult] = await Promise.allSettled([discoverMoni()]);
-  const moni = moniResult.status === "fulfilled" ? moniResult.value : [];
+  if (moniResult.status === "rejected") throw moniResult.reason;
+  const moni = moniResult.value;
   // Moni is the only source in this mode. Keep every returned item and use
   // Moni's own score; no LLM qualification or threshold is applied.
   const candidates = moni.slice(0, limit);

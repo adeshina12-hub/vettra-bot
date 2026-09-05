@@ -200,9 +200,16 @@ export async function getDailyResearchCount(userId) {
     return count ?? 0;
 }
 export async function claimBotResearch(userId, query, dailyLimit) {
-    const { data, error } = await supabase.rpc("claim_bot_research", {
+    return claimBotAction(userId, query, "research", dailyLimit);
+}
+export async function claimBotEarlyScan(userId, dailyLimit) {
+    return claimBotAction(userId, "early projects", "early", dailyLimit);
+}
+async function claimBotAction(userId, query, eventType, dailyLimit) {
+    const { data, error } = await supabase.rpc("claim_bot_action", {
         requested_user_id: userId,
         requested_query: normalizeQuery(query),
+        requested_event_type: eventType,
         daily_limit: dailyLimit,
     });
     if (error) {
@@ -228,12 +235,17 @@ export async function getBotAnalytics() {
     const { count: reports, error: reportsError } = await supabase
         .from("bot_research_events")
         .select("id", { count: "exact", head: true });
+    const { count: earlyScans, error: earlyError } = await supabase
+        .from("bot_research_events")
+        .select("id", { count: "exact", head: true })
+        .eq("event_type", "early");
     const { data: events, error: eventsError } = await supabase
         .from("bot_research_events")
         .select("query_normalized")
+        .eq("event_type", "research")
         .order("created_at", { ascending: false })
         .limit(5000);
-    if (usersError || reportsError || eventsError)
+    if (usersError || reportsError || earlyError || eventsError)
         throw new Error("Analytics are temporarily unavailable");
     const counts = new Map();
     for (const event of events ?? [])
@@ -242,7 +254,19 @@ export async function getBotAnalytics() {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10)
         .map(([query, count]) => ({ query, count }));
-    return { users: users ?? 0, reports: reports ?? 0, topProjects };
+    return { users: users ?? 0, reports: (reports ?? 0) - (earlyScans ?? 0), earlyScans: earlyScans ?? 0, topProjects };
+}
+export async function reserveExternalApiRequests(provider, requestCount, dailyCap) {
+    const { data, error } = await supabase.rpc("reserve_external_api_requests", {
+        requested_provider: provider,
+        requested_count: requestCount,
+        daily_cap: dailyCap,
+    });
+    if (error) {
+        console.error(`[api-usage] failed to reserve ${provider} requests:`, error);
+        throw new Error(`${provider} usage control is unavailable`);
+    }
+    return data === true;
 }
 export async function reserveLlmBudget(provider, costUsd, dailyCapUsd) {
     const { data, error } = await supabase.rpc("reserve_llm_budget", {

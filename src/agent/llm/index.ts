@@ -14,7 +14,17 @@ export function getAvailableProviders(): LLMProvider[] {
   const providers: LLMProvider[] = [];
   if (config.llm.geminiApiKey) providers.push(new GeminiProvider());
   if (config.llm.anthropicApiKey) providers.push(new AnthropicProvider());
-  if (config.llm.chainGptApiKey) providers.push(new ChainGptProvider());
+  if (config.llm.chainGptEnabled && config.llm.chainGptApiKey) providers.push(new ChainGptProvider());
+  return providers;
+}
+
+export function getAvailableAuditProviders(): LLMProvider[] {
+  const providers: LLMProvider[] = [];
+  if (config.llm.geminiApiKey) providers.push(new GeminiProvider());
+  if (config.llm.anthropicApiKey) providers.push(new AnthropicProvider());
+  if (config.llm.chainGptEnabled && config.llm.chainGptApiKey) {
+    providers.push(new ChainGptProvider(config.llm.chainGptAuditModel));
+  }
   return providers;
 }
 
@@ -35,9 +45,9 @@ export interface ConsensusResult<T> {
 export async function generateWithConsensus<T = any>(
   system: string,
   userPrompt: string,
-  maxTokens = 4000
+  maxTokens = 4000,
+  providers = getAvailableProviders()
 ): Promise<ConsensusResult<T>> {
-  const providers = getAvailableProviders();
   if (providers.length === 0) {
     throw new Error(
       "No LLM provider configured — set GEMINI_API_KEY, ANTHROPIC_API_KEY, and/or CHAIN_GPT_API_KEY in .env"

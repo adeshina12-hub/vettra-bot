@@ -223,9 +223,18 @@ export async function getDailyResearchCount(userId: number): Promise<number> {
 }
 
 export async function claimBotResearch(userId: number, query: string, dailyLimit: number): Promise<boolean> {
-  const { data, error } = await supabase.rpc("claim_bot_research", {
+  return claimBotAction(userId, query, "research", dailyLimit);
+}
+
+export async function claimBotEarlyScan(userId: number, dailyLimit: number): Promise<boolean> {
+  return claimBotAction(userId, "early projects", "early", dailyLimit);
+}
+
+async function claimBotAction(userId: number, query: string, eventType: string, dailyLimit: number): Promise<boolean> {
+  const { data, error } = await supabase.rpc("claim_bot_action", {
     requested_user_id: userId,
     requested_query: normalizeQuery(query),
+    requested_event_type: eventType,
     daily_limit: dailyLimit,
   });
   if (error) {
@@ -245,19 +254,24 @@ export async function recordBotResearch(userId: number, query: string, cached: b
   if (error) console.error("[analytics] failed to record research event:", error);
 }
 
-export async function getBotAnalytics(): Promise<{ users: number; reports: number; topProjects: Array<{ query: string; count: number }> }> {
+export async function getBotAnalytics(): Promise<{ users: number; reports: number; earlyScans: number; topProjects: Array<{ query: string; count: number }> }> {
   const { count: users, error: usersError } = await supabase
     .from("bot_users")
     .select("telegram_user_id", { count: "exact", head: true });
   const { count: reports, error: reportsError } = await supabase
     .from("bot_research_events")
     .select("id", { count: "exact", head: true });
+  const { count: earlyScans, error: earlyError } = await supabase
+    .from("bot_research_events")
+    .select("id", { count: "exact", head: true })
+    .eq("event_type", "early");
   const { data: events, error: eventsError } = await supabase
     .from("bot_research_events")
     .select("query_normalized")
+    .eq("event_type", "research")
     .order("created_at", { ascending: false })
     .limit(5000);
-  if (usersError || reportsError || eventsError) throw new Error("Analytics are temporarily unavailable");
+  if (usersError || reportsError || earlyError || eventsError) throw new Error("Analytics are temporarily unavailable");
 
   const counts = new Map<string, number>();
   for (const event of events ?? []) counts.set(event.query_normalized, (counts.get(event.query_normalized) ?? 0) + 1);
@@ -265,7 +279,20 @@ export async function getBotAnalytics(): Promise<{ users: number; reports: numbe
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .map(([query, count]) => ({ query, count }));
-  return { users: users ?? 0, reports: reports ?? 0, topProjects };
+  return { users: users ?? 0, reports: (reports ?? 0) - (earlyScans ?? 0), earlyScans: earlyScans ?? 0, topProjects };
+}
+
+export async function reserveExternalApiRequests(provider: string, requestCount: number, dailyCap: number): Promise<boolean> {
+  const { data, error } = await supabase.rpc("reserve_external_api_requests", {
+    requested_provider: provider,
+    requested_count: requestCount,
+    daily_cap: dailyCap,
+  });
+  if (error) {
+    console.error(`[api-usage] failed to reserve ${provider} requests:`, error);
+    throw new Error(`${provider} usage control is unavailable`);
+  }
+  return data === true;
 }
 
 export async function reserveLlmBudget(provider: string, costUsd: number, dailyCapUsd: number): Promise<boolean> {

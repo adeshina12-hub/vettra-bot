@@ -33,8 +33,14 @@ index.ts              → orchestrator, runs the pipeline every 15 min (cron)
    - `ANTHROPIC_API_KEY` — required, this is what scores/reasons about signals
   - `COINGECKO_API_KEY` — recommended for production; create a free CoinGecko Demo API key and add it to the Render service environment
   - `CHAIN_GPT_API_KEY` — optional ChainGPT Web3 LLM key; its model defaults to `general_assistant`
+  - `CHAIN_GPT_ENABLED` — enable ChainGPT calls (default `true`)
+  - `CHAIN_GPT_RESEARCH_MODEL` — ChainGPT research model (default `general_assistant`)
+  - `CHAIN_GPT_AUDIT_MODEL` — ChainGPT audit model (default `smart_contract_auditor`)
+  - `GEMINI_MODEL` — Gemini model name (default `gemini-3.6-flash`)
   - `BOT_DAILY_REPORT_LIMIT` — Telegram research reports per user per UTC day (default `5`)
+  - `BOT_DAILY_EARLY_SCAN_LIMIT` — Early Projects scans per user per UTC day (default `2`)
   - `BOT_REPORT_CACHE_MINUTES` — completed report cache duration (default `60`)
+  - `MONI_DAILY_REQUEST_CAP` — global Moni API calls allowed per UTC day (default `20`)
   - `LLM_DAILY_SPEND_CAP_USD` — application-side estimated LLM reservation cap (default `5`)
   - `LLM_ESTIMATED_CALL_COST_USD` — estimated reservation per provider call (default `0.05`)
   - `BOT_ANALYTICS_ADMIN_CHAT_ID` — Telegram chat ID allowed to run `/analytics`

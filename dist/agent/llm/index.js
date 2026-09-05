@@ -14,8 +14,19 @@ export function getAvailableProviders() {
         providers.push(new GeminiProvider());
     if (config.llm.anthropicApiKey)
         providers.push(new AnthropicProvider());
-    if (config.llm.chainGptApiKey)
+    if (config.llm.chainGptEnabled && config.llm.chainGptApiKey)
         providers.push(new ChainGptProvider());
+    return providers;
+}
+export function getAvailableAuditProviders() {
+    const providers = [];
+    if (config.llm.geminiApiKey)
+        providers.push(new GeminiProvider());
+    if (config.llm.anthropicApiKey)
+        providers.push(new AnthropicProvider());
+    if (config.llm.chainGptEnabled && config.llm.chainGptApiKey) {
+        providers.push(new ChainGptProvider(config.llm.chainGptAuditModel));
+    }
     return providers;
 }
 /**
@@ -26,8 +37,7 @@ export function getAvailableProviders() {
  * Gemini and Claude scored the same project very differently, which is
  * itself useful signal that the research is ambiguous.
  */
-export async function generateWithConsensus(system, userPrompt, maxTokens = 4000) {
-    const providers = getAvailableProviders();
+export async function generateWithConsensus(system, userPrompt, maxTokens = 4000, providers = getAvailableProviders()) {
     if (providers.length === 0) {
         throw new Error("No LLM provider configured — set GEMINI_API_KEY, ANTHROPIC_API_KEY, and/or CHAIN_GPT_API_KEY in .env");
     }

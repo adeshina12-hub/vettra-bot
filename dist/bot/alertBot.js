@@ -2,7 +2,7 @@ import { Markup, Telegraf } from "telegraf";
 import { config } from "../config.js";
 import { runResearch } from "../research/runResearch.js";
 import { findEarlyProjects } from "../research/earlyProjects.js";
-import { claimBotResearch, getBotAnalytics, getCachedReport, recordBotResearch, recordBotUser } from "../storage/db.js";
+import { claimBotEarlyScan, claimBotResearch, getBotAnalytics, getCachedReport, recordBotResearch, recordBotUser } from "../storage/db.js";
 const bot = config.alertBot.token ? new Telegraf(config.alertBot.token) : null;
 const awaitingResearchName = new Set();
 const inFlightResearch = new Map();
@@ -68,7 +68,7 @@ export function startUnifiedBot() {
         const topProjects = analytics.topProjects.length
             ? analytics.topProjects.map((item, index) => `${index + 1}. ${item.query}: ${item.count}`).join("\n")
             : "No research yet.";
-        await ctx.reply(`Analytics\nUnique users: ${analytics.users}\nReports run: ${analytics.reports}\n\nMost searched projects:\n${topProjects}`);
+        await ctx.reply(`Analytics\nUnique users: ${analytics.users}\nReports run: ${analytics.reports}\nEarly scans: ${analytics.earlyScans}\n\nMost searched projects:\n${topProjects}`);
     });
     bot.command("research", async (ctx) => {
         const query = getCommandArgs(ctx.message.text);
@@ -172,8 +172,18 @@ async function runResearchCommand(ctx, query) {
     }
 }
 async function runEarlyCommand(ctx, limit) {
+    const userId = ctx.from?.id;
+    if (!userId) {
+        await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
+        return;
+    }
     await ctx.reply(`🌱 Fetching ${limit} early projects...`);
     try {
+        const claimed = await claimBotEarlyScan(userId, config.bot.dailyEarlyScanLimit);
+        if (!claimed) {
+            await ctx.reply(`Daily early-project limit reached. You can run up to ${config.bot.dailyEarlyScanLimit} scans per day.`, mainMenu());
+            return;
+        }
         const scan = await findEarlyProjects(limit);
         await ctx.reply(formatEarlyResults(scan), { parse_mode: "MarkdownV2", ...mainMenu() });
     }

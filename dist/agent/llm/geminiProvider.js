@@ -17,8 +17,18 @@ export class GeminiProvider {
                 responseMimeType: "application/json",
             },
         });
-        const result = await model.generateContent(userPrompt);
-        const text = result.response.text();
-        return parseJsonLoose(text);
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                const result = await model.generateContent(userPrompt);
+                return parseJsonLoose(result.response.text());
+            }
+            catch (err) {
+                const status = err.status;
+                if (![429, 500, 502, 503, 504].includes(status ?? 0) || attempt === 2)
+                    throw err;
+                await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** attempt));
+            }
+        }
+        return null;
     }
 }
