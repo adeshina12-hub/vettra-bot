@@ -3,6 +3,7 @@ import type { LLMProvider } from "./provider.js";
 import { AnthropicProvider } from "./anthropicProvider.js";
 import { GeminiProvider } from "./geminiProvider.js";
 import { ChainGptProvider } from "./chainGptProvider.js";
+import { reserveLlmBudget } from "../../storage/db.js";
 
 /**
  * Returns every provider that currently has a valid-looking key configured.
@@ -46,6 +47,8 @@ export async function generateWithConsensus<T = any>(
   const results = await Promise.all(
     providers.map(async (p) => {
       try {
+        const allowed = await reserveLlmBudget(p.name, config.llm.estimatedCallCostUsd, config.llm.dailySpendCapUsd);
+        if (!allowed) throw new Error(`daily LLM spend cap reached ($${config.llm.dailySpendCapUsd})`);
         const output = await p.generateJSON<T>(system, userPrompt, maxTokens);
         return { provider: p.name, output };
       } catch (err) {

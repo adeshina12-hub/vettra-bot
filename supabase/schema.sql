@@ -67,6 +67,7 @@ create index if not exists term_mention_history_term_recorded_idx
 create table if not exists reports (
   id text primary key,
   query text not null,
+  query_normalized text,
   profile jsonb not null,
   criteria jsonb not null,
   overall_score double precision not null,
@@ -79,3 +80,85 @@ create table if not exists reports (
 
 create index if not exists reports_created_at_idx on reports (created_at desc);
 create index if not exists reports_query_idx on reports (query);
+alter table reports add column if not exists query_normalized text;
+create index if not exists reports_query_normalized_idx on reports (query_normalized, created_at desc);
+
+-- Telegram bot analytics, quotas, and provider budget reservations.
+create table if not exists bot_users (
+  telegram_user_id bigint primary key,
+  username text,
+  display_name text,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+create table if not exists bot_research_events (
+  id bigint generated always as identity primary key,
+  telegram_user_id bigint not null,
+  query_normalized text not null,
+  cached boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists bot_research_events_created_at_idx
+  on bot_research_events (created_at desc);
+create index if not exists bot_research_events_query_idx
+  on bot_research_events (query_normalized, created_at desc);
+
+create table if not exists llm_usage_reservations (
+  id bigint generated always as identity primary key,
+  provider text not null,
+  estimated_cost_usd numeric(12, 6) not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists llm_usage_reservations_created_at_idx
+  on llm_usage_reservations (created_at desc);
+
+create or replace function reserve_llm_budget(
+  requested_provider text,
+  requested_cost_usd numeric,
+  daily_cap_usd numeric
+) returns boolean
+language plpgsql
+as $$
+declare
+  current_spend numeric;
+begin
+  perform pg_advisory_xact_lock(hashtext('vettra-llm-daily-budget'));
+  select coalesce(sum(estimated_cost_usd), 0) into current_spend
+  from llm_usage_reservations
+  where created_at >= date_trunc('day', now());
+
+  if current_spend + requested_cost_usd > daily_cap_usd then
+    return false;
+  end if;
+
+  insert into llm_usage_reservations(provider, estimated_cost_usd)
+  values (requested_provider, requested_cost_usd);
+  return true;
+end;
+$$;
+
+create or replace function claim_bot_research(
+  requested_user_id bigint,
+  requested_query text,
+  daily_limit integer
+) returns boolean
+language plpgsql
+as $$
+begin
+  perform pg_advisory_xact_lock(hashtext('vettra-bot-user-' || requested_user_id::text));
+  if (
+    select count(*) from bot_research_events
+    where telegram_user_id = requested_user_id
+      and created_at >= date_trunc('day', now())
+  ) >= daily_limit then
+    return false;
+  end if;
+
+  insert into bot_research_events(telegram_user_id, query_normalized, cached)
+  values (requested_user_id, requested_query, false);
+  return true;
+end;
+$$;

@@ -2,10 +2,12 @@ import { Markup, Telegraf } from "telegraf";
 import { config } from "../config.js";
 import { runResearch } from "../research/runResearch.js";
 import { findEarlyProjects, type EarlyScanResult } from "../research/earlyProjects.js";
+import { claimBotResearch, getBotAnalytics, getCachedReport, recordBotResearch, recordBotUser } from "../storage/db.js";
 import type { Opportunity } from "../types.js";
 
 const bot = config.alertBot.token ? new Telegraf(config.alertBot.token) : null;
 const awaitingResearchName = new Set<number>();
+const inFlightResearch = new Map<string, Promise<Awaited<ReturnType<typeof runResearch>>>>();
 
 export async function sendOpportunityAlert(opp: Opportunity): Promise<void> {
   if (!bot || !config.alertBot.chatId) {
@@ -32,6 +34,17 @@ export function startUnifiedBot(): void {
     console.log("[telegram] command bot disabled: TELEGRAM_ALERT_BOT_TOKEN is not configured");
     return;
   }
+
+  bot.use(async (ctx, next) => {
+    if (ctx.from) {
+      await recordBotUser(
+        ctx.from.id,
+        ctx.from.username,
+        [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ") || undefined,
+      );
+    }
+    return next();
+  });
 
   bot.start(async (ctx) => {
     awaitingResearchName.delete(ctx.chat.id);
@@ -66,6 +79,18 @@ export function startUnifiedBot(): void {
 
   bot.command("help", async (ctx) => {
     await ctx.reply(helpMessage(), mainMenu());
+  });
+
+  bot.command("analytics", async (ctx) => {
+    if (String(ctx.chat.id) !== config.bot.analyticsAdminChatId) {
+      await ctx.reply("This command is only available to the bot administrator.");
+      return;
+    }
+    const analytics = await getBotAnalytics();
+    const topProjects = analytics.topProjects.length
+      ? analytics.topProjects.map((item, index) => `${index + 1}. ${item.query}: ${item.count}`).join("\n")
+      : "No research yet.";
+    await ctx.reply(`Analytics\nUnique users: ${analytics.users}\nReports run: ${analytics.reports}\n\nMost searched projects:\n${topProjects}`);
   });
 
   bot.command("research", async (ctx) => {
@@ -140,14 +165,43 @@ function helpMessage(): string {
     "Shortcuts: /research <name> · /early [1-10]";
 }
 
-async function runResearchCommand(ctx: { reply: (text: string, extra?: object) => Promise<unknown> }, query: string): Promise<void> {
+async function runResearchCommand(ctx: {
+  reply: (text: string, extra?: object) => Promise<unknown>;
+  from?: { id: number };
+}, query: string): Promise<void> {
   if (!query) {
     await ctx.reply("Please enter a project name or ticker.", mainMenu(true));
     return;
   }
-  await ctx.reply(`🔎 Researching ${query}...`);
+  if (!ctx.from) {
+    await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
+    return;
+  }
+
   try {
-    const report = await runResearch(query);
+    const claimed = await claimBotResearch(ctx.from.id, query, config.bot.dailyReportLimit);
+    if (!claimed) {
+      await ctx.reply(`Daily limit reached. You can run up to ${config.bot.dailyReportLimit} reports per day.`, mainMenu());
+      return;
+    }
+
+    const cached = await getCachedReport(query, config.bot.cacheMinutes);
+    if (cached) {
+      await recordBotResearch(ctx.from.id, query, true);
+      await ctx.reply(formatResearchReport(cached), { parse_mode: "MarkdownV2", ...mainMenu() });
+      return;
+    }
+
+    await ctx.reply(`🔎 Researching ${query}...`);
+    const normalized = query.trim().replace(/\s+/g, " ").toLowerCase();
+    let research = inFlightResearch.get(normalized);
+    if (!research) {
+      research = runResearch(query);
+      inFlightResearch.set(normalized, research);
+      void research.finally(() => inFlightResearch.delete(normalized));
+    }
+    const report = await research;
+    await recordBotResearch(ctx.from.id, query, false);
     await ctx.reply(formatResearchReport(report), { parse_mode: "MarkdownV2", ...mainMenu() });
   } catch (err) {
     console.error("[telegram] research command failed:", err);

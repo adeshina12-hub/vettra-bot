@@ -33,6 +33,11 @@ index.ts              → orchestrator, runs the pipeline every 15 min (cron)
    - `ANTHROPIC_API_KEY` — required, this is what scores/reasons about signals
   - `COINGECKO_API_KEY` — recommended for production; create a free CoinGecko Demo API key and add it to the Render service environment
   - `CHAIN_GPT_API_KEY` — optional ChainGPT Web3 LLM key; its model defaults to `general_assistant`
+  - `BOT_DAILY_REPORT_LIMIT` — Telegram research reports per user per UTC day (default `5`)
+  - `BOT_REPORT_CACHE_MINUTES` — completed report cache duration (default `60`)
+  - `LLM_DAILY_SPEND_CAP_USD` — application-side estimated LLM reservation cap (default `5`)
+  - `LLM_ESTIMATED_CALL_COST_USD` — estimated reservation per provider call (default `0.05`)
+  - `BOT_ANALYTICS_ADMIN_CHAT_ID` — Telegram chat ID allowed to run `/analytics`
    - `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` — from your Supabase project's
      Settings → API (use the **service_role** key, not anon/public)
    - `LUNARCRUSH_API_KEY` — free tier, for the social collector
@@ -64,6 +69,12 @@ scoring candidates with the same chain/category/stage/score/why structure as
 the discovery project. It uses Moni, GitHub, and DeFiLlama directly from the
 research service. It does not send proactive alerts; responses happen only
 after a user command.
+
+The bot records unique users, report events, and most-searched projects in
+Supabase. Run `/analytics` from the configured admin chat to view the totals.
+Apply the latest `supabase/schema.sql` before enabling these controls. The LLM
+reservation cap is an application guard; configure a real spending limit or
+usage alert in each provider dashboard for the billing-level cap.
 
 ## What's real vs. stubbed right now
 

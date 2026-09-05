@@ -163,6 +163,7 @@ export async function saveReport(report: ResearchReport): Promise<void> {
   const { error } = await supabase.from("reports").insert({
     id: report.id,
     query: report.query,
+    query_normalized: normalizeQuery(report.query),
     profile: report.profile,
     criteria: report.criteria,
     overall_score: report.overallScore,
@@ -173,6 +174,111 @@ export async function saveReport(report: ResearchReport): Promise<void> {
     created_at: report.createdAt,
   });
   if (error) console.error("[storage] failed to save report:", error);
+}
+
+export function normalizeQuery(query: string): string {
+  return query.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export async function getCachedReport(query: string, cacheMinutes: number): Promise<ResearchReport | null> {
+  const cutoff = new Date(Date.now() - cacheMinutes * 60_000).toISOString();
+  const { data, error } = await supabase
+    .from("reports")
+    .select("*")
+    .eq("query_normalized", normalizeQuery(query))
+    .gte("created_at", cutoff)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("[storage] failed to fetch cached report:", error);
+    return null;
+  }
+  return data ? rowToReport(data) : null;
+}
+
+export async function recordBotUser(userId: number, username?: string, displayName?: string): Promise<void> {
+  const { error } = await supabase.from("bot_users").upsert({
+    telegram_user_id: userId,
+    username: username ?? null,
+    display_name: displayName ?? null,
+    last_seen_at: new Date().toISOString(),
+  }, { onConflict: "telegram_user_id" });
+  if (error) console.error("[analytics] failed to record bot user:", error);
+}
+
+export async function getDailyResearchCount(userId: number): Promise<number> {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const { count, error } = await supabase
+    .from("bot_research_events")
+    .select("id", { count: "exact", head: true })
+    .eq("telegram_user_id", userId)
+    .gte("created_at", start.toISOString());
+  if (error) {
+    console.error("[analytics] failed to count daily reports:", error);
+    throw new Error("Usage limits are temporarily unavailable");
+  }
+  return count ?? 0;
+}
+
+export async function claimBotResearch(userId: number, query: string, dailyLimit: number): Promise<boolean> {
+  const { data, error } = await supabase.rpc("claim_bot_research", {
+    requested_user_id: userId,
+    requested_query: normalizeQuery(query),
+    daily_limit: dailyLimit,
+  });
+  if (error) {
+    console.error("[analytics] failed to claim daily report:", error);
+    throw new Error("Usage limits are temporarily unavailable");
+  }
+  return data === true;
+}
+
+export async function recordBotResearch(userId: number, query: string, cached: boolean): Promise<void> {
+  const { error } = await supabase.from("bot_research_events")
+    .update({ cached })
+    .eq("telegram_user_id", userId)
+    .eq("query_normalized", normalizeQuery(query))
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) console.error("[analytics] failed to record research event:", error);
+}
+
+export async function getBotAnalytics(): Promise<{ users: number; reports: number; topProjects: Array<{ query: string; count: number }> }> {
+  const { count: users, error: usersError } = await supabase
+    .from("bot_users")
+    .select("telegram_user_id", { count: "exact", head: true });
+  const { count: reports, error: reportsError } = await supabase
+    .from("bot_research_events")
+    .select("id", { count: "exact", head: true });
+  const { data: events, error: eventsError } = await supabase
+    .from("bot_research_events")
+    .select("query_normalized")
+    .order("created_at", { ascending: false })
+    .limit(5000);
+  if (usersError || reportsError || eventsError) throw new Error("Analytics are temporarily unavailable");
+
+  const counts = new Map<string, number>();
+  for (const event of events ?? []) counts.set(event.query_normalized, (counts.get(event.query_normalized) ?? 0) + 1);
+  const topProjects = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([query, count]) => ({ query, count }));
+  return { users: users ?? 0, reports: reports ?? 0, topProjects };
+}
+
+export async function reserveLlmBudget(provider: string, costUsd: number, dailyCapUsd: number): Promise<boolean> {
+  const { data, error } = await supabase.rpc("reserve_llm_budget", {
+    requested_provider: provider,
+    requested_cost_usd: costUsd,
+    daily_cap_usd: dailyCapUsd,
+  });
+  if (error) {
+    console.error("[llm] failed to reserve daily budget:", error);
+    throw new Error("LLM budget control is unavailable");
+  }
+  return data === true;
 }
 
 export async function getReport(id: string): Promise<ResearchReport | null> {

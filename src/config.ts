@@ -16,6 +16,14 @@ export const config = {
     chainGptApiKey: required("CHAIN_GPT_API_KEY"),
     geminiModel: required("GEMINI_MODEL", "gemini-3.6-flash"),
     chainGptModel: required("CHAIN_GPT_MODEL", "general_assistant"),
+    dailySpendCapUsd: Number(required("LLM_DAILY_SPEND_CAP_USD", "5")),
+    estimatedCallCostUsd: Number(required("LLM_ESTIMATED_CALL_COST_USD", "0.05")),
+  },
+
+  bot: {
+    dailyReportLimit: Number(required("BOT_DAILY_REPORT_LIMIT", "5")),
+    cacheMinutes: Number(required("BOT_REPORT_CACHE_MINUTES", "60")),
+    analyticsAdminChatId: required("BOT_ANALYTICS_ADMIN_CHAT_ID"),
   },
 
   coingecko: {
