@@ -25,12 +25,27 @@ export const config = {
   bot: {
     dailyReportLimit: Number(required("BOT_DAILY_REPORT_LIMIT", "5")),
     dailyEarlyScanLimit: Number(required("BOT_DAILY_EARLY_SCAN_LIMIT", "2")),
+    dailyMemeScanLimit: Number(required("BOT_DAILY_MEME_SCAN_LIMIT", "15")),
+    dailyNftScanLimit: Number(required("BOT_DAILY_NFT_SCAN_LIMIT", "10")),
+    dailyNftSearchLimit: Number(required("BOT_DAILY_NFT_SEARCH_LIMIT", "10")),
     cacheMinutes: Number(required("BOT_REPORT_CACHE_MINUTES", "60")),
     analyticsAdminChatId: required("BOT_ANALYTICS_ADMIN_CHAT_ID"),
+    // Permanent owners: always admin, and cannot be removed via bot commands.
+    // Everyone else is granted/revoked at runtime with /addadmin, /removeadmin.
+    adminUserIds: required("BOT_ADMIN_USER_IDS")
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isInteger(value) && value > 0),
   },
 
   coingecko: {
     apiKey: required("COINGECKO_API_KEY"),
+  },
+
+  // Optional — OpenSea's per-collection stats/metadata endpoints work
+  // keyless. A key (https://docs.opensea.io) raises rate limits.
+  opensea: {
+    apiKey: required("OPENSEA_API_KEY"),
   },
 
   // Optional - GitHub allows 60 unauthenticated requests/hour, 5000 with a
@@ -67,7 +82,7 @@ export const config = {
 
   moni: {
     apiKey: required("MONI_API_KEY"),
-    dailyRequestCap: Number(required("MONI_DAILY_REQUEST_CAP", "20")),
+    dailyRequestCap: Number(required("MONI_DAILY_REQUEST_CAP", "100")),
   },
 
   dashboardPort: Number(required("DASHBOARD_PORT", "4000")),

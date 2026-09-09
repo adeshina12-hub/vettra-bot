@@ -77,6 +77,84 @@ export interface ResearchReport {
   createdAt: string;
 }
 
+// --- Meme coin scanner (contract address → degen due diligence) ---
+
+export type MemeCheckStatus = "pass" | "warn" | "fail" | "unknown";
+
+/** One deterministic due-diligence check, so the numbers never come from an LLM. */
+export interface MemeCheck {
+  label: string;
+  status: MemeCheckStatus;
+  detail: string;
+}
+
+export interface MemeMarketSnapshot {
+  address: string;
+  name: string;
+  symbol: string;
+  chain: string;
+  dex: string;
+  pairAddress: string;
+  pairUrl: string;
+  pairCount: number;
+  priceUsd?: number;
+  marketCap?: number;
+  fdv?: number;
+  liquidityUsd?: number;
+  /** Liquidity summed across every pair for this token on the same chain. */
+  totalLiquidityUsd?: number;
+  volume24h?: number;
+  volume1h?: number;
+  priceChange: { m5?: number; h1?: number; h6?: number; h24?: number };
+  txns24h?: { buys: number; sells: number };
+  txns1h?: { buys: number; sells: number };
+  ageHours?: number;
+  createdAt?: string;
+  websites: string[];
+  socials: string[];
+  imageUrl?: string;
+}
+
+export interface MemeSecuritySnapshot {
+  source: "goplus";
+  honeypot?: boolean;
+  buyTaxPct?: number;
+  sellTaxPct?: number;
+  ownerRenounced?: boolean;
+  mintable?: boolean;
+  /** Solana only — a live freeze authority can lock every holder's balance. */
+  freezable?: boolean;
+  metadataMutable?: boolean;
+  transferPausable?: boolean;
+  blacklistable?: boolean;
+  proxy?: boolean;
+  openSource?: boolean;
+  holderCount?: number;
+  /** Top-10 share excluding pools, burn addresses, and locked balances. */
+  top10HolderPct?: number;
+  lpLockedOrBurnedPct?: number;
+}
+
+export interface MemeCoinReport {
+  id: string;
+  address: string;
+  market: MemeMarketSnapshot;
+  security?: MemeSecuritySnapshot;
+  /** 0-100, rule-based (not model-generated). */
+  degenScore: number;
+  rating: string;
+  /** Non-empty means "do not touch", regardless of everything else. */
+  dealBreakers: string[];
+  checks: MemeCheck[];
+  verdict: string;
+  bullCase: string[];
+  redFlags: string[];
+  positionSizing: string;
+  providers: string[];
+  disclaimer: string;
+  createdAt: string;
+}
+
 export type AuditSeverity = "critical" | "high" | "medium" | "low" | "info";
 
 export interface SecurityAuditFinding {

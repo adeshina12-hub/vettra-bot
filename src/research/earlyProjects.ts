@@ -202,7 +202,7 @@ function buildMoniScore(candidate: EarlyCandidate): EarlyScore {
   };
 }
 
-export async function findEarlyProjects(limit = 3): Promise<EarlyScanResult> {
+export async function findEarlyProjects(limit = 10): Promise<EarlyScanResult> {
   const [moniResult] = await Promise.allSettled([discoverMoni()]);
   if (moniResult.status === "rejected") throw moniResult.reason;
   const moni = moniResult.value;

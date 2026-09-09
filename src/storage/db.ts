@@ -207,6 +207,46 @@ export async function recordBotUser(userId: number, username?: string, displayNa
   if (error) console.error("[analytics] failed to record bot user:", error);
 }
 
+export interface BotAdminRow {
+  telegram_user_id: number;
+  username: string | null;
+  display_name: string | null;
+}
+
+export async function fetchBotAdmins(): Promise<BotAdminRow[]> {
+  const { data, error } = await supabase
+    .from("bot_users")
+    .select("telegram_user_id, username, display_name")
+    .eq("is_admin", true);
+  if (error) throw new Error(`Failed to load bot admins: ${error.message}`);
+  return data ?? [];
+}
+
+/**
+ * Upserts rather than updates: an owner can promote someone who has never
+ * messaged the bot, so the row may not exist yet.
+ */
+export async function setBotAdmin(userId: number, isAdmin: boolean, username?: string): Promise<void> {
+  const { error } = await supabase.from("bot_users").upsert({
+    telegram_user_id: userId,
+    ...(username ? { username } : {}),
+    is_admin: isAdmin,
+    last_seen_at: new Date().toISOString(),
+  }, { onConflict: "telegram_user_id" });
+  if (error) throw new Error(`Failed to update admin status: ${error.message}`);
+}
+
+/** Resolves an @username to a user id — only works for users the bot has seen. */
+export async function findBotUserByUsername(username: string): Promise<BotAdminRow | null> {
+  const { data, error } = await supabase
+    .from("bot_users")
+    .select("telegram_user_id, username, display_name")
+    .ilike("username", username.replace(/^@/, ""))
+    .limit(1);
+  if (error) throw new Error(`Failed to look up user: ${error.message}`);
+  return data?.[0] ?? null;
+}
+
 export async function getDailyResearchCount(userId: number): Promise<number> {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -228,6 +268,18 @@ export async function claimBotResearch(userId: number, query: string, dailyLimit
 
 export async function claimBotEarlyScan(userId: number, dailyLimit: number): Promise<boolean> {
   return claimBotAction(userId, "early projects", "early", dailyLimit);
+}
+
+export async function claimBotMemeScan(userId: number, address: string, dailyLimit: number): Promise<boolean> {
+  return claimBotAction(userId, address, "meme", dailyLimit);
+}
+
+export async function claimBotNftScan(userId: number, dailyLimit: number): Promise<boolean> {
+  return claimBotAction(userId, "dormant nfts", "nft", dailyLimit);
+}
+
+export async function claimBotNftSearch(userId: number, dailyLimit: number): Promise<boolean> {
+  return claimBotAction(userId, "nft search", "nftsearch", dailyLimit);
 }
 
 async function claimBotAction(userId: number, query: string, eventType: string, dailyLimit: number): Promise<boolean> {
@@ -254,32 +306,57 @@ export async function recordBotResearch(userId: number, query: string, cached: b
   if (error) console.error("[analytics] failed to record research event:", error);
 }
 
-export async function getBotAnalytics(): Promise<{ users: number; reports: number; earlyScans: number; topProjects: Array<{ query: string; count: number }> }> {
+export async function getBotAnalytics(): Promise<{ users: number; reports: number; earlyScans: number; memeScans: number; nftScans: number; topProjects: Array<{ query: string; count: number }>; topMemeTokens: Array<{ query: string; count: number }> }> {
   const { count: users, error: usersError } = await supabase
     .from("bot_users")
     .select("telegram_user_id", { count: "exact", head: true });
+  // Counted per event_type rather than as "everything minus early scans", so
+  // adding another bot workflow never silently inflates the report count.
   const { count: reports, error: reportsError } = await supabase
     .from("bot_research_events")
-    .select("id", { count: "exact", head: true });
+    .select("id", { count: "exact", head: true })
+    .eq("event_type", "research");
   const { count: earlyScans, error: earlyError } = await supabase
     .from("bot_research_events")
     .select("id", { count: "exact", head: true })
     .eq("event_type", "early");
+  const { count: memeScans, error: memeError } = await supabase
+    .from("bot_research_events")
+    .select("id", { count: "exact", head: true })
+    .eq("event_type", "meme");
+  const { count: nftScans, error: nftError } = await supabase
+    .from("bot_research_events")
+    .select("id", { count: "exact", head: true })
+    .eq("event_type", "nft");
   const { data: events, error: eventsError } = await supabase
     .from("bot_research_events")
-    .select("query_normalized")
-    .eq("event_type", "research")
+    .select("query_normalized, event_type")
+    .in("event_type", ["research", "meme"])
     .order("created_at", { ascending: false })
     .limit(5000);
-  if (usersError || reportsError || earlyError || eventsError) throw new Error("Analytics are temporarily unavailable");
+  if (usersError || reportsError || earlyError || memeError || nftError || eventsError) throw new Error("Analytics are temporarily unavailable");
 
+  return {
+    users: users ?? 0,
+    reports: reports ?? 0,
+    earlyScans: earlyScans ?? 0,
+    memeScans: memeScans ?? 0,
+    nftScans: nftScans ?? 0,
+    topProjects: rankQueries(events ?? [], "research"),
+    topMemeTokens: rankQueries(events ?? [], "meme"),
+  };
+}
+
+function rankQueries(events: Array<{ query_normalized: string; event_type: string }>, eventType: string): Array<{ query: string; count: number }> {
   const counts = new Map<string, number>();
-  for (const event of events ?? []) counts.set(event.query_normalized, (counts.get(event.query_normalized) ?? 0) + 1);
-  const topProjects = [...counts.entries()]
+  for (const event of events) {
+    if (event.event_type !== eventType) continue;
+    counts.set(event.query_normalized, (counts.get(event.query_normalized) ?? 0) + 1);
+  }
+  return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .map(([query, count]) => ({ query, count }));
-  return { users: users ?? 0, reports: (reports ?? 0) - (earlyScans ?? 0), earlyScans: earlyScans ?? 0, topProjects };
 }
 
 export async function reserveExternalApiRequests(provider: string, requestCount: number, dailyCap: number): Promise<boolean> {

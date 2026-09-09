@@ -92,6 +92,13 @@ create table if not exists bot_users (
   last_seen_at timestamptz not null default now()
 );
 
+-- Admin allowlist. Admins see and can run the admin-only bot sections
+-- (dormant NFTs, analytics). Owners listed in BOT_ADMIN_USER_IDS are always
+-- admins regardless of this column and cannot be removed from within the bot.
+alter table bot_users add column if not exists is_admin boolean not null default false;
+
+create index if not exists bot_users_is_admin_idx on bot_users (is_admin) where is_admin;
+
 create table if not exists bot_research_events (
   id bigint generated always as identity primary key,
   telegram_user_id bigint not null,

@@ -1,5 +1,8 @@
 import express from "express";
 import { runResearch } from "./research/runResearch.js";
+import { analyzeMemeCoin } from "./research/memeCoin.js";
+import { findDormantNftCollections } from "./research/nftCollections.js";
+import { findEmergingNftCollections } from "./research/emergingNfts.js";
 import { runAudit } from "./securityAudit.js";
 
 /**
@@ -26,6 +29,53 @@ app.post("/research", async (req, res) => {
   } catch (err) {
     console.error("[research-server] research run failed:", err);
     res.status(500).json({ error: "Research run failed", detail: String(err) });
+  }
+});
+
+app.post("/meme", async (req, res) => {
+  const { address } = req.body ?? {};
+  if (!address || typeof address !== "string") {
+    res.status(400).json({ error: "Missing 'address' string in request body" });
+    return;
+  }
+
+  try {
+    res.json(await analyzeMemeCoin(address));
+  } catch (err) {
+    console.error("[research-server] meme scan failed:", err);
+    // Bad/unlisted addresses are user error, not a server fault — a 400 lets
+    // the caller show the message instead of a generic failure.
+    res.status(400).json({ error: "Meme coin scan failed", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.get("/nfts/dormant", async (req, res) => {
+  const limit = Number(req.query.limit ?? 5);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    res.status(400).json({ error: "'limit' must be an integer between 1 and 50" });
+    return;
+  }
+
+  try {
+    res.json(await findDormantNftCollections(limit));
+  } catch (err) {
+    console.error("[research-server] dormant NFT scan failed:", err);
+    res.status(500).json({ error: "Dormant NFT scan failed", detail: String(err) });
+  }
+});
+
+app.get("/nfts/emerging", async (req, res) => {
+  const limit = Number(req.query.limit ?? 5);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    res.status(400).json({ error: "'limit' must be an integer between 1 and 50" });
+    return;
+  }
+
+  try {
+    res.json(await findEmergingNftCollections(limit));
+  } catch (err) {
+    console.error("[research-server] emerging NFT search failed:", err);
+    res.status(500).json({ error: "Emerging NFT search failed", detail: err instanceof Error ? err.message : String(err) });
   }
 });
 
