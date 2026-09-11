@@ -282,6 +282,44 @@ export async function claimBotNftSearch(userId: number, dailyLimit: number): Pro
   return claimBotAction(userId, "nft search", "nftsearch", dailyLimit);
 }
 
+export async function claimBotMintScan(userId: number, dailyLimit: number): Promise<boolean> {
+  return claimBotAction(userId, "upcoming mints", "mints", dailyLimit);
+}
+
+export async function claimBotSnipeLookup(userId: number, dailyLimit: number): Promise<boolean> {
+  return claimBotAction(userId, "nft snipe", "snipe", dailyLimit);
+}
+
+// --- Custodial trading wallets ---
+
+export interface WalletRow {
+  telegram_user_id: number;
+  address: string;
+  encrypted_key: string;
+  key_iv: string;
+  key_tag: string;
+  created_at: string;
+}
+
+export async function getWalletRow(userId: number): Promise<WalletRow | null> {
+  const { data, error } = await supabase
+    .from("bot_wallets")
+    .select("*")
+    .eq("telegram_user_id", userId)
+    .maybeSingle();
+  if (error) throw new Error(`Failed to load wallet: ${error.message}`);
+  return (data as WalletRow | null) ?? null;
+}
+
+/**
+ * Insert, never upsert: overwriting an existing row would replace the key to
+ * a wallet that may already hold funds, making them permanently unreachable.
+ */
+export async function insertWalletRow(row: WalletRow): Promise<void> {
+  const { error } = await supabase.from("bot_wallets").insert(row);
+  if (error) throw new Error(`Failed to save wallet: ${error.message}`);
+}
+
 async function claimBotAction(userId: number, query: string, eventType: string, dailyLimit: number): Promise<boolean> {
   const { data, error } = await supabase.rpc("claim_bot_action", {
     requested_user_id: userId,

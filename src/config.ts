@@ -28,6 +28,8 @@ export const config = {
     dailyMemeScanLimit: Number(required("BOT_DAILY_MEME_SCAN_LIMIT", "15")),
     dailyNftScanLimit: Number(required("BOT_DAILY_NFT_SCAN_LIMIT", "10")),
     dailyNftSearchLimit: Number(required("BOT_DAILY_NFT_SEARCH_LIMIT", "10")),
+    dailyMintScanLimit: Number(required("BOT_DAILY_MINT_SCAN_LIMIT", "15")),
+    dailySnipeLimit: Number(required("BOT_DAILY_SNIPE_LIMIT", "25")),
     cacheMinutes: Number(required("BOT_REPORT_CACHE_MINUTES", "60")),
     analyticsAdminChatId: required("BOT_ANALYTICS_ADMIN_CHAT_ID"),
     // Permanent owners: always admin, and cannot be removed via bot commands.
@@ -54,8 +56,20 @@ export const config = {
     token: required("GITHUB_TOKEN"),
   },
 
+  // Master key for encrypting custodial private keys at rest. 32 bytes as
+  // hex (openssl rand -hex 32). Wallet features refuse to run without it.
+  wallet: {
+    encryptionKey: required("WALLET_ENCRYPTION_KEY"),
+  },
+
   rpc: {
     eth: required("ETH_RPC_URL"),
+    // Arc publishes no public RPC yet (it is absent from the canonical EVM
+    // chain registry and every known endpoint refuses), so buying on Arc
+    // stays off until an endpoint is supplied here.
+    arc: required("ARC_RPC_URL"),
+    // Verified against chainid.network and confirmed live via eth_chainId.
+    robinhood: required("ROBINHOOD_RPC_URL", "https://rpc.mainnet.chain.robinhood.com"),
     base: required("BASE_RPC_URL"),
     bsc: required("BSC_RPC_URL"),
   },

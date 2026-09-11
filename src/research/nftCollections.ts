@@ -1,5 +1,5 @@
 import { fetchCoinGecko } from "./coingecko.js";
-import { fetchCollection, fetchStats, hasOpenSeaKey, mapLimit, readIntervals } from "./opensea.js";
+import { fetchCollection, fetchStats, hasOpenSeaKey, mapLimit, readIntervals, sliceRotating } from "./opensea.js";
 
 /**
  * Dormant blue-chip NFT scanner.
@@ -84,18 +84,19 @@ let scanCache: { expiresAt: number; result: DormantNftScanResult } | null = null
 
 export async function findDormantNftCollections(
   limit = 5,
-  options: { minLifetimeVolumeEth?: number; maxRecentShare?: number; minOwners?: number } = {}
+  options: { minLifetimeVolumeEth?: number; maxRecentShare?: number; minOwners?: number; offset?: number } = {}
 ): Promise<DormantNftScanResult> {
   const minLifetimeVolumeEth = options.minLifetimeVolumeEth ?? 10_000;
   const maxRecentShare = options.maxRecentShare ?? 0.001; // 0.1% of lifetime volume in 30d
   // Filters out derivative/utility contracts that look dormant but have no
   // real holder base to speak of.
   const minOwners = options.minOwners ?? 200;
+  const offset = options.offset ?? 0;
 
   // The universe changes slowly and each scan is ~54 upstream calls, so the
   // ranked list is cached and only the presentation slice varies by `limit`.
   if (scanCache && scanCache.expiresAt > Date.now()) {
-    return { ...scanCache.result, collections: await enrichTop(scanCache.result, limit) };
+    return { ...scanCache.result, collections: await enrichTop(scanCache.result, limit, offset) };
   }
 
   const buildRow = async (slug: string): Promise<DormantNftCollection | null> => {
@@ -163,7 +164,7 @@ export async function findDormantNftCollections(
   };
 
   scanCache = { expiresAt: Date.now() + SCAN_CACHE_MS, result };
-  return { ...result, collections: await enrichTop(result, limit) };
+  return { ...result, collections: await enrichTop(result, limit, offset) };
 }
 
 /**
@@ -172,8 +173,8 @@ export async function findDormantNftCollections(
  * Enriched rows are written back into the cached scan so repeat calls
  * (the common case, since the bot defaults to the same top 5) cost nothing.
  */
-async function enrichTop(result: DormantNftScanResult, limit: number): Promise<DormantNftCollection[]> {
-  const slice = result.collections.slice(0, Math.max(1, limit));
+async function enrichTop(result: DormantNftScanResult, limit: number, offset: number): Promise<DormantNftCollection[]> {
+  const slice = sliceRotating(result.collections, offset, Math.max(1, limit));
   const enriched = await mapLimit(slice, 4, async (row) => {
     if (row.enriched) return row;
     const detail = await fetchCollection(row.slug);
@@ -223,7 +224,7 @@ async function enrichTop(result: DormantNftScanResult, limit: number): Promise<D
     const index = result.collections.findIndex((item) => item.slug === row.slug);
     if (index >= 0) result.collections[index] = row;
   }
-  return result.collections.slice(0, Math.max(1, limit));
+  return sliceRotating(result.collections, offset, Math.max(1, limit));
 }
 
 /** Log-scaled: 0.5% of lifetime volume in 30d = still trading (0), 0.02% = flatlined (100). */

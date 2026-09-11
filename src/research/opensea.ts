@@ -13,13 +13,23 @@ import { fetchWithTimeout } from "./http.js";
 const OPENSEA_BASE = "https://api.opensea.io/api/v2";
 
 export interface OpenSeaStats {
-  total?: { volume?: number; sales?: number; num_owners?: number; floor_price?: number };
+  total?: {
+    volume?: number;
+    sales?: number;
+    num_owners?: number;
+    floor_price?: number;
+    /** Not always ETH — Robinhood Chain quotes in USDG, for example. */
+    floor_price_symbol?: string;
+    volume_symbol?: string;
+  };
   intervals?: Array<{ interval: string; volume?: number; sales?: number }>;
 }
 
 export interface OpenSeaCollection {
   collection?: string;
   name?: string;
+  description?: string;
+  image_url?: string;
   opensea_url?: string;
   project_url?: string;
   discord_url?: string;
@@ -52,10 +62,13 @@ function headers(): Record<string, string> {
  * worse (more refusals, 4x the runtime) — pressure is the trigger, so 401 is
  * treated as terminal for that slug.
  */
-export async function openseaJson<T>(path: string, label: string): Promise<T | null> {
+export async function openseaJson<T>(path: string, label: string, init: RequestInit = {}): Promise<T | null> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await fetchWithTimeout(`${OPENSEA_BASE}${path}`, { headers: headers() });
+      const response = await fetchWithTimeout(`${OPENSEA_BASE}${path}`, {
+        ...init,
+        headers: { ...headers(), ...(init.body ? { "Content-Type": "application/json" } : {}) },
+      });
       if (response.ok) return (await response.json()) as T;
       if (response.status !== 429 && response.status < 500) return null;
     } catch (err) {
@@ -114,6 +127,21 @@ export function readIntervals(stats: OpenSeaStats): {
     sales: map[key]?.sales ?? 0,
   });
   return { oneDay: read("one_day"), sevenDay: read("seven_day"), thirtyDay: read("thirty_day") };
+}
+
+/**
+ * Takes `count` items starting at `offset`, wrapping around the end.
+ *
+ * The scanners rank far more collections than any single reply shows, so
+ * without this a user scanning repeatedly sees the identical top 5 forever.
+ * Callers advance the offset between calls to page through the whole ranked
+ * list and then cycle.
+ */
+export function sliceRotating<T>(items: T[], offset: number, count: number): T[] {
+  if (items.length === 0) return [];
+  const size = Math.min(count, items.length);
+  const start = ((offset % items.length) + items.length) % items.length;
+  return Array.from({ length: size }, (_, index) => items[(start + index) % items.length]);
 }
 
 /**

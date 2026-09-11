@@ -99,6 +99,23 @@ alter table bot_users add column if not exists is_admin boolean not null default
 
 create index if not exists bot_users_is_admin_idx on bot_users (is_admin) where is_admin;
 
+-- Custodial trading wallets for the NFT sniper. The private key is stored
+-- ONLY as AES-256-GCM ciphertext; the master key lives in the backend's
+-- WALLET_ENCRYPTION_KEY env var and never touches this database, so a dump of
+-- this table alone cannot spend anyone's funds.
+create table if not exists bot_wallets (
+  telegram_user_id bigint primary key,
+  address text not null unique,
+  encrypted_key text not null,
+  key_iv text not null,
+  key_tag text not null,
+  created_at timestamptz not null default now()
+);
+
+-- This table holds key material: never expose it through the anon key or a
+-- public API. RLS stays on with no policies, so only the service role reads it.
+alter table bot_wallets enable row level security;
+
 create table if not exists bot_research_events (
   id bigint generated always as identity primary key,
   telegram_user_id bigint not null,

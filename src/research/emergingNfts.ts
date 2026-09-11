@@ -1,4 +1,4 @@
-import { fetchStats, hasOpenSeaKey, listCollections, mapLimit, readIntervals, type OpenSeaCollection } from "./opensea.js";
+import { fetchStats, hasOpenSeaKey, listCollections, mapLimit, readIntervals, sliceRotating } from "./opensea.js";
 
 /**
  * Emerging NFT search — collections that are early but already showing real
@@ -61,6 +61,7 @@ export async function findEmergingNftCollections(
     minSales7d?: number;
     minOwners?: number;
     minVolume7dEth?: number;
+    offset?: number;
   } = {}
 ): Promise<EmergingNftScanResult> {
   // Above this a collection has already had its run — it is no longer "early".
@@ -69,9 +70,10 @@ export async function findEmergingNftCollections(
   const minSales7d = options.minSales7d ?? 25;
   const minOwners = options.minOwners ?? 50;
   const minVolume7dEth = options.minVolume7dEth ?? 0.5;
+  const offset = options.offset ?? 0;
 
   if (scanCache && scanCache.expiresAt > Date.now()) {
-    return { ...scanCache.result, collections: scanCache.result.collections.slice(0, Math.max(1, limit)) };
+    return { ...scanCache.result, collections: sliceRotating(scanCache.result.collections, offset, Math.max(1, limit)) };
   }
 
   if (!hasOpenSeaKey()) {
@@ -151,7 +153,7 @@ export async function findEmergingNftCollections(
   };
 
   scanCache = { expiresAt: Date.now() + SCAN_CACHE_MS, result };
-  return { ...result, collections: qualified.slice(0, Math.max(1, limit)) };
+  return { ...result, collections: sliceRotating(qualified, offset, Math.max(1, limit)) };
 }
 
 /**

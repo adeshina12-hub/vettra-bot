@@ -3,6 +3,7 @@ import { runResearch } from "./research/runResearch.js";
 import { analyzeMemeCoin } from "./research/memeCoin.js";
 import { findDormantNftCollections } from "./research/nftCollections.js";
 import { findEmergingNftCollections } from "./research/emergingNfts.js";
+import { findUpcomingMints } from "./research/upcomingMints.js";
 import { runAudit } from "./securityAudit.js";
 
 /**
@@ -76,6 +77,21 @@ app.get("/nfts/emerging", async (req, res) => {
   } catch (err) {
     console.error("[research-server] emerging NFT search failed:", err);
     res.status(500).json({ error: "Emerging NFT search failed", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.get("/nfts/mints", async (req, res) => {
+  const limit = Number(req.query.limit ?? 10);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    res.status(400).json({ error: "'limit' must be an integer between 1 and 50" });
+    return;
+  }
+
+  try {
+    res.json(await findUpcomingMints(limit, { offset: Number(req.query.offset ?? 0) || 0 }));
+  } catch (err) {
+    console.error("[research-server] upcoming mints failed:", err);
+    res.status(502).json({ error: "Upcoming mints failed", detail: err instanceof Error ? err.message : String(err) });
   }
 });
 

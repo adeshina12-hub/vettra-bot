@@ -5,17 +5,41 @@ import { findEarlyProjects, type EarlyScanResult } from "../research/earlyProjec
 import { analyzeMemeCoin, formatAge, fmtPct, looksLikeContractAddress, price, usd } from "../research/memeCoin.js";
 import { findDormantNftCollections, type DormantNftScanResult } from "../research/nftCollections.js";
 import { findEmergingNftCollections, type EmergingNftScanResult } from "../research/emergingNfts.js";
+import { findUpcomingMints, type UpcomingMintScanResult } from "../research/upcomingMints.js";
 import { grantAdmin, isAdmin, isOwner, listAdmins, refreshAdmins, revokeAdmin } from "./admins.js";
-import { claimBotEarlyScan, claimBotMemeScan, claimBotNftScan, claimBotNftSearch, claimBotResearch, findBotUserByUsername, getBotAnalytics, getCachedReport, recordBotResearch, recordBotUser } from "../storage/db.js";
+import { createWallet, exportPrivateKey, getBalances, getWallet, isTradableChain, tradableChains, withdraw, type SupportedChain } from "../wallet/wallet.js";
+import { executeSnipe } from "../wallet/snipe.js";
+import { CHAIN_LABELS, SELECTABLE_CHAINS, looksLikeNftContract, lookupNftByContract, type NftLookupResult } from "../research/nftLookup.js";
+import { claimBotEarlyScan, claimBotMemeScan, claimBotMintScan, claimBotNftScan, claimBotNftSearch, claimBotSnipeLookup, claimBotResearch, findBotUserByUsername, getBotAnalytics, getCachedReport, recordBotResearch, recordBotUser } from "../storage/db.js";
 import type { MemeCoinReport, Opportunity } from "../types.js";
 
 const bot = config.alertBot.token ? new Telegraf(config.alertBot.token) : null;
 const awaitingResearchName = new Set<number>();
 const awaitingMemeAddress = new Set<number>();
+const awaitingNftContract = new Set<number>();
+/** Chain the user picked for their next snipe; absent means search all. */
+const snipeChainChoice = new Map<number, string>();
+/** Last snipe lookup per user, so /buy <n> knows which listing was meant. */
+const lastSnipeLookup = new Map<number, NftLookupResult>();
 const inFlightResearch = new Map<string, Promise<Awaited<ReturnType<typeof runResearch>>>>();
 const inFlightMemeScans = new Map<string, Promise<MemeCoinReport>>();
 // Telegram rejects messages over 4096 characters outright.
 const TELEGRAM_MAX_MESSAGE = 3900;
+
+/**
+ * Per-user read positions into each ranked list. The scanners rank far more
+ * results than one reply shows, so without these a user scanning repeatedly
+ * would see the identical entries every time. Each scan advances the user's
+ * position and wraps at the end.
+ */
+const scanOffsets = new Map<string, number>();
+
+function takeOffset(kind: string, userId: number, shown: number): number {
+  const key = `${kind}:${userId}`;
+  const current = scanOffsets.get(key) ?? 0;
+  scanOffsets.set(key, current + shown);
+  return current;
+}
 
 export async function sendOpportunityAlert(opp: Opportunity): Promise<void> {
   if (!bot || !config.alertBot.chatId) {
@@ -81,7 +105,11 @@ export function startUnifiedBot(): void {
 
   bot.hears("NFT search", async (ctx) => {
     clearModes(ctx.chat.id);
-    await runNftSearchCommand(ctx, 5);
+    await ctx.reply("🔭 How many early collections should I surface? Each scan shows different ones.", countMenu("NFT scan"));
+  });
+
+  bot.hears(/^NFT scan: ([1-9]|10)$/, async (ctx) => {
+    await runNftSearchCommand(ctx, Number(ctx.message.text.match(/([1-9]|10)$/)?.[1] ?? 5));
   });
 
   bot.command("nftsearch", async (ctx) => {
@@ -94,6 +122,162 @@ export function startUnifiedBot(): void {
 
     clearModes(ctx.chat.id);
     await runNftSearchCommand(ctx, limit);
+  });
+
+  bot.hears("Upcoming mints", async (ctx) => {
+    clearModes(ctx.chat.id);
+    await ctx.reply("🗓 How many upcoming mints should I pull? Each scan shows different ones.", countMenu("Mint scan"));
+  });
+
+  bot.hears(/^Mint scan: ([1-9]|10)$/, async (ctx) => {
+    await runMintsCommand(ctx, Number(ctx.message.text.match(/([1-9]|10)$/)?.[1] ?? 5));
+  });
+
+  bot.command("mints", async (ctx) => {
+    const rawLimit = getCommandArgs(ctx.message.text) || "5";
+    const limit = Number(rawLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
+      await ctx.reply("Usage: /mints [1-10]");
+      return;
+    }
+
+    clearModes(ctx.chat.id);
+    await runMintsCommand(ctx, limit);
+  });
+
+  bot.hears("NFT snipe", async (ctx) => {
+    clearModes(ctx.chat.id);
+    await ctx.reply("🎯 Which chain is the NFT on?", chainMenu());
+  });
+
+  bot.hears(/^Chain: (.+)$/, async (ctx) => {
+    const label = ctx.message.text.replace(/^Chain: /, "").trim();
+    clearModes(ctx.chat.id);
+
+    if (label === "Any") {
+      snipeChainChoice.delete(ctx.chat.id);
+    } else {
+      const chain = SELECTABLE_CHAINS.find((key) => CHAIN_LABELS[key] === label);
+      if (!chain) {
+        await ctx.reply("Unknown chain. Pick one from the keyboard.", chainMenu());
+        return;
+      }
+      snipeChainChoice.set(ctx.chat.id, chain);
+    }
+
+    awaitingNftContract.add(ctx.chat.id);
+    await ctx.reply(snipeModeMessage(snipeChainChoice.get(ctx.chat.id)), { parse_mode: "Markdown", ...mainMenu(true) });
+  });
+
+  bot.command("snipe", async (ctx) => {
+    const [address, chainArg] = getCommandArgs(ctx.message.text).split(/\s+/);
+    if (!address) {
+      clearModes(ctx.chat.id);
+      await ctx.reply("🎯 Which chain is the NFT on?", chainMenu());
+      return;
+    }
+    if (chainArg) {
+      const chain = SELECTABLE_CHAINS.find((key) => key === chainArg.toLowerCase());
+      if (!chain) {
+        await ctx.reply(`Unknown chain "${chainArg}". Options: ${SELECTABLE_CHAINS.join(", ")}`);
+        return;
+      }
+      snipeChainChoice.set(ctx.chat.id, chain);
+    }
+    await runNftSnipeLookup(ctx, address, snipeChainChoice.get(ctx.chat.id));
+  });
+
+  bot.command("buy", async (ctx) => {
+    const index = Number(getCommandArgs(ctx.message.text) || "1");
+    if (!Number.isInteger(index) || index < 1 || index > 5) {
+      await ctx.reply("Usage: /buy <1-5> — the number next to the listing you want.");
+      return;
+    }
+    await runNftBuy(ctx, index);
+  });
+
+  bot.hears("Wallet", async (ctx) => {
+    clearModes(ctx.chat.id);
+    await runWalletCommand(ctx);
+  });
+
+  bot.command("wallet", async (ctx) => {
+    clearModes(ctx.chat.id);
+    await runWalletCommand(ctx);
+  });
+
+  bot.command("balance", async (ctx) => {
+    await runWalletCommand(ctx);
+  });
+
+  bot.command("deposit", async (ctx) => {
+    try {
+      const wallet = await getWallet(ctx.from.id);
+      if (!wallet) {
+        await ctx.reply("You do not have a wallet yet. Use /wallet to create one.", mainMenu());
+        return;
+      }
+      await ctx.reply(
+        `Send ETH on *Base* or BNB on *BNB Chain* to this address\\.\n\n` +
+        `${escapeMd("Both chains use the same address:")}\n\`${wallet.address}\`\n\n` +
+        `⚠️ ${escapeMd("Only send on Base or BNB Chain. Funds sent on other networks are lost.")}`,
+        { parse_mode: "MarkdownV2", ...mainMenu() },
+      );
+    } catch (err) {
+      await ctx.reply(walletErrorMessage(err), mainMenu());
+    }
+  });
+
+  bot.command("withdraw", async (ctx) => {
+    const [chainArg, to, amount] = getCommandArgs(ctx.message.text).split(/\s+/);
+    if (!chainArg || !to || !amount) {
+      await ctx.reply(
+        "Usage: /withdraw <base|bsc> <address> <amount|max>\n\n" +
+        "Example: /withdraw base 0xYourAddress 0.01\n" +
+        "Example: /withdraw bsc 0xYourAddress max",
+      );
+      return;
+    }
+    if (!isTradableChain(chainArg.toLowerCase())) {
+      const options = tradableChains().map((item) => item.key).join(", ") || "none configured";
+      await ctx.reply(`Chain must be one of: ${options}.`);
+      return;
+    }
+
+    try {
+      await ctx.reply("Sending...");
+      const result = await withdraw(ctx.from.id, chainArg.toLowerCase() as SupportedChain, to, amount === "max" ? "max" : amount);
+      await ctx.reply(
+        `✅ Sent ${escapeMd(result.amount)} ${escapeMd(result.symbol)}\\.\n\n[View transaction](${escapeUrl(result.explorerUrl)})`,
+        // Telegraf's typings for a raw ctx use link_preview_options, not the
+        // legacy disable_web_page_preview the structurally-typed helpers pass.
+        { parse_mode: "MarkdownV2", link_preview_options: { is_disabled: true }, ...mainMenu() },
+      );
+    } catch (err) {
+      await ctx.reply(walletErrorMessage(err), mainMenu());
+    }
+  });
+
+  bot.command("export", async (ctx) => {
+    if (getCommandArgs(ctx.message.text).trim().toUpperCase() !== "CONFIRM") {
+      await ctx.reply(
+        "⚠️ This reveals your private key in this chat.\n\n" +
+        "Anyone who sees it controls your funds, and Telegram keeps message history on its servers. " +
+        "Move your funds out first if you are unsure.\n\n" +
+        "If you understand, send:  /export CONFIRM",
+      );
+      return;
+    }
+
+    try {
+      const key = await exportPrivateKey(ctx.from.id);
+      await ctx.reply(
+        `${escapeMd("Your private key:")}\n\n\`${key}\`\n\n${escapeMd("Delete this message once you have saved it.")}`,
+        { parse_mode: "MarkdownV2" },
+      );
+    } catch (err) {
+      await ctx.reply(walletErrorMessage(err), mainMenu());
+    }
   });
 
   bot.command("myid", async (ctx) => {
@@ -230,6 +414,12 @@ export function startUnifiedBot(): void {
   bot.on("text", async (ctx, next) => {
     const text = ctx.message.text.trim();
 
+    if (awaitingNftContract.has(ctx.chat.id)) {
+      awaitingNftContract.delete(ctx.chat.id);
+      await runNftSnipeLookup(ctx, text, snipeChainChoice.get(ctx.chat.id));
+      return;
+    }
+
     if (awaitingMemeAddress.has(ctx.chat.id)) {
       awaitingMemeAddress.delete(ctx.chat.id);
       await runMemeCommand(ctx, text);
@@ -289,14 +479,17 @@ export function startUnifiedBot(): void {
 function mainMenu(back = false) {
   return Markup.keyboard([
     ["Early projects", "Meme coin scan"],
-    ["Research a project", "NFT search"],
-    ["Help", ...(back ? ["Back to menu"] : [])],
+    ["NFT search", "Upcoming mints"],
+    ["NFT snipe", "Wallet"],
+    ["Research a project", "Help"],
+    ...(back ? [["Back to menu"]] : []),
   ]).resize().persistent();
 }
 
 function clearModes(chatId: number): void {
   awaitingResearchName.delete(chatId);
   awaitingMemeAddress.delete(chatId);
+  awaitingNftContract.delete(chatId);
 }
 
 /**
@@ -356,6 +549,15 @@ function earlyCountMenu() {
   return Markup.keyboard([["Early scan: 1", "Early scan: 3", "Early scan: 5"], ["Early scan: 10"], ["Help"]]).resize().oneTime();
 }
 
+/** Count picker shared by the NFT search and upcoming-mint scans. */
+function countMenu(prefix: string) {
+  return Markup.keyboard([
+    [`${prefix}: 3`, `${prefix}: 5`],
+    [`${prefix}: 8`, `${prefix}: 10`],
+    ["Back to menu"],
+  ]).resize().oneTime();
+}
+
 function welcomeMessage(): string {
   return "🚀 *Welcome to Vettra Research*\n\n" +
     "Your Web3 research desk for project signals, early builders, and clear verdicts.\n\n" +
@@ -368,7 +570,12 @@ function helpMessage(userId?: number): string {
     "🐸 *Meme coin scan*\nPaste any token contract address and I will pull its live DexScreener price, market cap, FDV, and liquidity, run contract-safety checks (honeypot, LP lock, mint authority, whale concentration), and give you a degen verdict.\n\n" +
     "🔎 *Research a project*\nSend a name or ticker and I will return a scored research verdict, strengths, and red flags.\n\n" +
     "🔭 *NFT search*\nEarly OpenSea collections that are still small but already picking up real trading traction, scored 0-100 on potential — with their X handle and website.\n\n" +
-    "Shortcuts: /early [1-10] · /meme <contract> · /research <name> · /nftsearch [1-10]";
+    "🗓 *Upcoming mints*\nNFT mints that have not happened yet, pulled live from Mint Deck with date, supply, price and socials.\n\n" +
+    "🎯 *NFT snipe*\nPaste an NFT contract address to see its floor, volume, owners and cheapest live listings, then buy straight from your bot wallet. Links to OpenSea, Blur, Magic Eden, Element and OKX too.\n\n" +
+    "👛 *Wallet*\nA trading wallet on Base and BNB Chain, created for you here. Fund it, check balances, and withdraw any time.\n\n" +
+    "Every scan lets you pick how many results you want, and shows different ones each time.\n\n" +
+    "Shortcuts: /early [1-10] · /meme <contract> · /research <name> · /nftsearch [1-10] · /mints [1-10]\n" +
+    "Wallet: /wallet · /deposit · /withdraw <base or bsc> <address> <amount or max> · /export";
 
   if (!isAdmin(userId)) return base;
 
@@ -525,7 +732,7 @@ async function runNftCommand(ctx: {
     }
 
     await ctx.reply("🖼 Checking OpenSea for blue chips that have gone quiet...");
-    const scan = await findDormantNftCollections(limit);
+    const scan = await findDormantNftCollections(limit, { offset: takeOffset("nfts", ctx.from.id, limit) });
     await ctx.reply(formatNftScan(scan), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
   } catch (err) {
     console.error("[telegram] NFT scan failed:", err);
@@ -551,7 +758,7 @@ async function runNftSearchCommand(ctx: {
     }
 
     await ctx.reply("🔭 Scanning OpenSea for early collections picking up traction...");
-    const scan = await findEmergingNftCollections(limit);
+    const scan = await findEmergingNftCollections(limit, { offset: takeOffset("nftsearch", ctx.from.id, limit) });
     await ctx.reply(formatNftSearch(scan), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
   } catch (err) {
     console.error("[telegram] NFT search failed:", err);
@@ -560,8 +767,305 @@ async function runNftSearchCommand(ctx: {
   }
 }
 
+async function runMintsCommand(ctx: {
+  reply: (text: string, extra?: object) => Promise<unknown>;
+  from?: { id: number };
+}, limit: number): Promise<void> {
+  if (!ctx.from) {
+    await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
+    return;
+  }
+
+  try {
+    const claimed = await claimBotMintScan(ctx.from.id, config.bot.dailyMintScanLimit);
+    if (!claimed) {
+      await ctx.reply(`Daily limit reached. You can run up to ${config.bot.dailyMintScanLimit} mint scans per day.`, mainMenu());
+      return;
+    }
+
+    await ctx.reply("🗓 Pulling upcoming mints from Mint Deck...");
+    const scan = await findUpcomingMints(limit, { offset: takeOffset("mints", ctx.from.id, limit) });
+    await ctx.reply(formatMints(scan), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
+  } catch (err) {
+    console.error("[telegram] mint scan failed:", err);
+    const detail = err instanceof Error ? err.message : String(err);
+    await ctx.reply(`Upcoming mints failed: ${detail.slice(0, 300)}`, mainMenu());
+  }
+}
+
+async function runNftSnipeLookup(ctx: {
+  reply: (text: string, extra?: object) => Promise<unknown>;
+  from?: { id: number };
+}, rawAddress: string, chainHint?: string): Promise<void> {
+  if (!ctx.from) {
+    await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
+    return;
+  }
+  if (!looksLikeNftContract(rawAddress)) {
+    await ctx.reply("That does not look like an NFT contract address. Send an EVM address starting with 0x.", mainMenu(true));
+    return;
+  }
+
+  try {
+    const claimed = await claimBotSnipeLookup(ctx.from.id, config.bot.dailySnipeLimit);
+    if (!claimed) {
+      await ctx.reply(`Daily limit reached. You can run up to ${config.bot.dailySnipeLimit} NFT lookups per day.`, mainMenu());
+      return;
+    }
+
+    await ctx.reply(
+      chainHint
+        ? `🎯 Looking that up on ${CHAIN_LABELS[chainHint] ?? chainHint}...`
+        : "🎯 Finding that collection and its cheapest listings..."
+    );
+    const result = await lookupNftByContract(rawAddress, chainHint);
+    lastSnipeLookup.set(ctx.from.id, result);
+    await ctx.reply(formatNftSnipe(result), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
+  } catch (err) {
+    console.error("[telegram] NFT lookup failed:", err);
+    const detail = err instanceof Error ? err.message : String(err);
+    await ctx.reply(`NFT lookup failed: ${detail.slice(0, 300)}`, mainMenu());
+  }
+}
+
+async function runNftBuy(ctx: {
+  reply: (text: string, extra?: object) => Promise<unknown>;
+  from?: { id: number };
+}, index: number): Promise<void> {
+  if (!ctx.from) {
+    await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
+    return;
+  }
+
+  const lookup = lastSnipeLookup.get(ctx.from.id);
+  if (!lookup) {
+    await ctx.reply("Look up a collection first: press NFT snipe and paste the contract address.", mainMenu());
+    return;
+  }
+
+  const listing = lookup.listings[index - 1];
+  if (!listing) {
+    await ctx.reply(`There is no listing #${index}. That collection had ${lookup.listings.length} listing(s).`, mainMenu());
+    return;
+  }
+  if (!lookup.tradable) {
+    await ctx.reply(
+      `The bot can only buy on Base and BNB Chain right now, and this collection is on ${lookup.chainLabel}. ` +
+      `You can still buy it here: ${listing.openseaUrl}`,
+      mainMenu(),
+    );
+    return;
+  }
+
+  try {
+    const wallet = await getWallet(ctx.from.id);
+    if (!wallet) {
+      await ctx.reply("Create your trading wallet first with /wallet, then fund it with /deposit.", mainMenu());
+      return;
+    }
+
+    await ctx.reply(`Buying token #${listing.tokenId} for ${listing.priceEth} ${listing.currency}...`);
+    const result = await executeSnipe(ctx.from.id, listing, wallet.address);
+    const lines = [
+      `✅ ${escapeMd("Bought")} *${escapeMd(`#${result.tokenId}`)}* ${escapeMd(`for ${result.pricePaid} ${result.symbol}.`)}`,
+    ];
+    if (result.approvalHash) lines.push(escapeMd("(approved the payment token first)"));
+    // Chains without a known block explorer still confirm, just without a link.
+    lines.push(result.explorerUrl
+      ? `\n[View transaction](${escapeUrl(result.explorerUrl)})`
+      : `\n${escapeMd(`Tx: ${result.hash}`)}`);
+
+    await ctx.reply(lines.join("\n"), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
+  } catch (err) {
+    console.error("[telegram] NFT buy failed:", err);
+    const detail = err instanceof Error ? err.message : String(err);
+    await ctx.reply(`Purchase failed: ${detail.slice(0, 400)}`, mainMenu());
+  }
+}
+
+export function formatNftSnipe(result: NftLookupResult): string {
+  const header = [
+    `🎯 *${escapeMd(result.name)}*${result.verified ? " ✅" : ""}`,
+    `${escapeMd(result.chainLabel)}${result.totalSupply ? ` · ${escapeMd(result.totalSupply.toLocaleString())} items` : ""}`,
+    `\`${result.contract}\``,
+  ].join("\n");
+
+  // Quote in the collection's own currency: Robinhood Chain prices in USDG,
+  // and printing "6 ETH" for 6 USDG misstates the value by orders of magnitude.
+  const unit = result.currencySymbol;
+  const stats = [
+    `💰 Floor: ${escapeMd(amount(result.floorPriceEth, unit))} · 👥 ${escapeMd((result.owners ?? 0).toLocaleString())} owners`,
+    `📈 24h: ${escapeMd(`${(result.volume24hEth ?? 0).toFixed(2)} ${unit} / ${plural(result.sales24h ?? 0, "sale")}`)}`,
+    `📊 7d: ${escapeMd(`${(result.volume7dEth ?? 0).toFixed(1)} ${unit} / ${plural(result.sales7d ?? 0, "sale")}`)}`,
+    `🏛 Lifetime: ${escapeMd(`${Math.round(result.lifetimeVolumeEth ?? 0).toLocaleString()} ${unit}`)}`,
+  ].join("\n");
+
+  const sections = [header, stats];
+
+  if (result.listings.length) {
+    const rows = result.listings.slice(0, 5).map((listing, index) =>
+      `${index + 1}\\. \\#${escapeMd(listing.tokenId)} — *${escapeMd(String(Number(listing.priceEth.toFixed(6))))} ${escapeMd(listing.currency)}*` +
+      `${listing.basic ? "" : " _\\(auction\\)_"}`
+    );
+    sections.push(`*Cheapest listings*\n${rows.join("\n")}`);
+    sections.push(
+      result.tradable
+        ? `Buy with your bot wallet: \`/buy 1\` … \`/buy ${Math.min(result.listings.length, 5)}\``
+        : `⚠️ The bot buys on Base and BNB Chain only\\. This is on ${escapeMd(result.chainLabel)} — use the marketplace links below\\.`
+    );
+  } else {
+    sections.push("*Cheapest listings*\nNothing is listed for sale right now\\.");
+  }
+
+  const links = result.marketplaces.map((market) => `[${escapeMd(market.name)}](${escapeUrl(market.url)})`).join(" · ");
+  sections.push(`*Marketplaces*\n${links}`);
+
+  const socials = [
+    result.twitterUrl ? `[X](${escapeUrl(result.twitterUrl)})` : null,
+    result.website ? `[Website](${escapeUrl(result.website)})` : null,
+    result.discord ? `[Discord](${escapeUrl(result.discord)})` : null,
+  ].filter(Boolean).join(" · ");
+  if (socials) sections.push(`*Links*\n${socials}`);
+
+  sections.push("_NFT prices move fast and listings can disappear between the quote and the purchase\\. Not financial advice\\._");
+  return truncateMessage(sections.join("\n\n"));
+}
+
+function chainMenu() {
+  // "Any" first: auto-detection is right for most users, who will not know
+  // which chain a pasted address belongs to.
+  const labels = SELECTABLE_CHAINS.map((key) => `Chain: ${CHAIN_LABELS[key]}`);
+  const rows: string[][] = [["Chain: Any"]];
+  for (let i = 0; i < labels.length; i += 2) rows.push(labels.slice(i, i + 2));
+  rows.push(["Back to menu"]);
+  return Markup.keyboard(rows).resize().oneTime();
+}
+
+function snipeModeMessage(chain?: string): string {
+  // Arc mainnet has not launched, so OpenSea lists nothing on it. Say that up
+  // front instead of letting the user paste an address and get "not found".
+  if (chain === "arc") {
+    return "🎯 *NFT snipe — Arc*\n\n" +
+      "Arc mainnet has not launched yet — Circle currently runs Arc on testnet only, and no NFTs are listed on it.\n\n" +
+      "Pick another chain, or use *Any* to search everywhere. I will switch Arc on automatically once it goes live.";
+  }
+
+  const scope = chain
+    ? `Searching *${CHAIN_LABELS[chain] ?? chain}* only.`
+    : "I will search Ethereum, Base, BNB Chain, Arc, Robinhood Chain, Polygon, Arbitrum and Optimism automatically.";
+
+  const buyable = tradableChains();
+  const buyLine = buyable.length
+    ? `Buying from your bot wallet works on ${buyable.map((item) => item.name).join(" and ")} — elsewhere I give you the marketplace links.`
+    : "No chain has an RPC configured yet, so I can show listings but not buy. The operator needs to set the RPC URLs.";
+
+  return "🎯 *NFT snipe*\n\nPaste the NFT collection's contract address and I will show its floor, volume, owners and the cheapest live listings.\n\n" +
+    `${scope}\n\n` +
+    "Example:\n`0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d`\n\n" +
+    buyLine;
+}
+
+async function runWalletCommand(ctx: {
+  reply: (text: string, extra?: object) => Promise<unknown>;
+  from?: { id: number };
+}): Promise<void> {
+  if (!ctx.from) {
+    await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
+    return;
+  }
+
+  try {
+    const { wallet, created } = await createWallet(ctx.from.id);
+    const balances = await getBalances(wallet.address);
+
+    const lines = [
+      created ? "🎉 *Your trading wallet is ready*" : "👛 *Your trading wallet*",
+      `\`${wallet.address}\``,
+      "",
+      ...balances.map((item) =>
+        `${escapeMd(item.chain.name)}: *${escapeMd(trimBalance(item.balance))} ${escapeMd(item.chain.symbol)}*${item.error ? " ⚠️" : ""}`
+      ),
+      "",
+      // Escaped programmatically rather than by hand: these lines contain
+      // <angle brackets> and pipes, and hand-escaping missed ">" (which
+      // MarkdownV2 reserves for blockquotes) and broke the whole message.
+      escapeMd("Fund it by sending ETH on Base or BNB on BNB Chain to the address above."),
+      "",
+      escapeMd("/deposit — show the address again"),
+      escapeMd("/withdraw <base|bsc> <address> <amount|max>"),
+      escapeMd("/export — reveal your private key"),
+    ];
+
+    if (created) {
+      lines.push(
+        "",
+        "⚠️ This wallet is *custodial*: " +
+        escapeMd("the bot holds the key so it can trade for you. Only keep what you are actively trading with, and use /export to take self-custody at any time."),
+      );
+    }
+
+    await ctx.reply(lines.join("\n"), { parse_mode: "MarkdownV2", ...mainMenu() });
+  } catch (err) {
+    console.error("[telegram] wallet command failed:", err);
+    await ctx.reply(walletErrorMessage(err), mainMenu());
+  }
+}
+
+/** Turns the "key not configured" case into an operator-actionable message. */
+function walletErrorMessage(err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  if (detail.includes("WALLET_ENCRYPTION_KEY")) {
+    return "Wallet features are not enabled on this deployment yet. The operator needs to set WALLET_ENCRYPTION_KEY.";
+  }
+  if (detail.includes("bot_wallets")) {
+    return "The wallet table is not migrated yet. The operator needs to run the bot_wallets migration in Supabase.";
+  }
+  return detail.slice(0, 300);
+}
+
+/** 0.010000000000000002 → 0.01 */
+function trimBalance(value: string): string {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return value;
+  if (num === 0) return "0";
+  if (num < 0.000001) return num.toExponential(2);
+  return String(Number(num.toFixed(6)));
+}
+
 function getCommandArgs(text: string): string {
   return text.replace(/^\/\S+\s*/, "").trim();
+}
+
+export function formatMints(scan: UpcomingMintScanResult): string {
+  if (!scan.mints.length) {
+    return "No upcoming mints are listed right now\\. Try again later\\.";
+  }
+
+  const header =
+    "🗓 *Upcoming NFT mints*\n" +
+    escapeMd(`${scan.total} listed on Mint Deck, ${scan.dated} with a confirmed date.`);
+
+  const entries = scan.mints.map((mint) => {
+    const links = [
+      mint.twitterUrl ? `[X](${escapeUrl(mint.twitterUrl)})` : null,
+      mint.website ? `[Website](${escapeUrl(mint.website)})` : null,
+      mint.discord ? `[Discord](${escapeUrl(mint.discord)})` : null,
+      mint.telegram ? `[Telegram](${escapeUrl(mint.telegram)})` : null,
+    ].filter(Boolean).join(" · ");
+
+    return [
+      `${mint.dated ? "📅" : "❓"} *${escapeMd(mint.name)}*${mint.chain ? ` · ${escapeMd(mint.chain)}` : ""}`,
+      `🕒 Mint: ${escapeMd(mint.mintDate)} · 🔢 Supply: ${escapeMd(mint.supply)} · 💰 Price: ${escapeMd(mint.price)}`,
+      mint.twitterHandle ? `🐦 X: @${escapeMd(mint.twitterHandle)}` : "🐦 X: not listed",
+      links || "_no links listed_",
+    ].join("\n");
+  });
+
+  const footer =
+    `[Browse all on Mint Deck](${escapeUrl(scan.source)})\n` +
+    "_Dates and prices are as published by the projects and change often\\. Always confirm on the official account before minting\\._";
+
+  return truncateMessage([header, ...entries, footer].join("\n\n"));
 }
 
 export function formatNftSearch(scan: EmergingNftScanResult): string {
@@ -722,11 +1226,15 @@ function plural(count: number, noun: string): string {
 }
 
 /** OpenSea reports floors as raw floats (0.15684999999999927) — trim the noise. */
-function eth(value: number | undefined): string {
+function amount(value: number | undefined, unit = "ETH"): string {
   if (value === undefined || !Number.isFinite(value)) return "n/a";
-  if (value >= 100) return `${value.toFixed(0)} ETH`;
-  if (value >= 1) return `${value.toFixed(2)} ETH`;
-  return `${value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")} ETH`;
+  if (value >= 100) return `${value.toFixed(0)} ${unit}`;
+  if (value >= 1) return `${value.toFixed(2)} ${unit}`;
+  return `${value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")} ${unit}`;
+}
+
+function eth(value: number | undefined): string {
+  return amount(value, "ETH");
 }
 
 /** Inside a MarkdownV2 link destination only ")" and "\" need escaping. */
