@@ -1,19 +1,30 @@
 import { ethers } from "ethers";
 import { config } from "../config.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
-import { getWalletRow, insertWalletRow } from "../storage/db.js";
+import {
+  getWalletRow,
+  getWalletRowByIndex,
+  insertWalletRow,
+  listWalletRows,
+  renameWalletRow,
+  setActiveWalletRow,
+  type WalletRow,
+} from "../storage/db.js";
 
 /**
  * Custodial trading wallets for the sniper.
  *
- * One wallet per Telegram user, generated server-side so a user can fund and
- * trade without leaving the chat. The private key is encrypted at rest (see
- * crypto.ts) and only decrypted in memory for the moment a transaction is
- * signed — it is never logged, never stored in plaintext, and never sent to
- * any external service.
+ * Users can hold several wallets, generated server-side so they can fund and
+ * trade without leaving the chat. Exactly one is "active" at a time, and that
+ * is the one trades and withdrawals act on — keeping the destructive commands
+ * unambiguous rather than asking which wallet on every call.
  *
- * The same address is used on both chains: Base and BSC are both EVM, so one
- * keypair controls both, which is what users expect from a trading bot.
+ * Each private key is encrypted at rest (see crypto.ts) and only decrypted in
+ * memory for the moment a transaction is signed — never logged, never stored
+ * in plaintext, never sent to any external service.
+ *
+ * One address works across every supported chain: they are all EVM, so a
+ * single keypair controls the same address on each.
  */
 
 export type SupportedChain = "base" | "bsc" | "arc" | "robinhood";
@@ -83,6 +94,10 @@ export function tradableChains(): ChainInfo[] {
 export interface UserWallet {
   address: string;
   createdAt: string;
+  /** 1-based, stable per user — what /use and /buy refer to. */
+  index: number;
+  label?: string;
+  active: boolean;
 }
 
 export interface ChainBalance {
@@ -107,19 +122,50 @@ function providerFor(chain: SupportedChain): ethers.JsonRpcProvider {
   return provider;
 }
 
+function toWallet(row: WalletRow): UserWallet {
+  return {
+    address: row.address,
+    createdAt: row.created_at,
+    index: row.wallet_index ?? 1,
+    label: row.label ?? undefined,
+    active: row.is_active ?? false,
+  };
+}
+
+/** The wallet that trades and withdrawals act on. */
 export async function getWallet(userId: number): Promise<UserWallet | null> {
   const row = await getWalletRow(userId);
-  return row ? { address: row.address, createdAt: row.created_at } : null;
+  return row ? toWallet(row) : null;
+}
+
+export async function listWallets(userId: number): Promise<UserWallet[]> {
+  return (await listWalletRows(userId)).map(toWallet);
 }
 
 /**
- * Creates a wallet, or returns the existing one. Never regenerates: silently
- * replacing a funded wallet would strand the user's money.
+ * Returns the user's existing wallet, creating their first one if they have
+ * none. Never regenerates an existing wallet — silently replacing a funded
+ * one would strand the money in it.
  */
 export async function createWallet(userId: number): Promise<{ wallet: UserWallet; created: boolean }> {
   const existing = await getWallet(userId);
   if (existing) return { wallet: existing, created: false };
+  return { wallet: await addWallet(userId), created: true };
+}
 
+/**
+ * Adds another wallet and makes it active. Each wallet is an independent
+ * keypair, so funds never move between them implicitly.
+ */
+export async function addWallet(userId: number, label?: string, maxWallets = 10): Promise<UserWallet> {
+  const existing = await listWalletRows(userId);
+  if (existing.length >= maxWallets) {
+    throw new Error(`You already have ${maxWallets} wallets, which is the maximum.`);
+  }
+
+  // Index from the highest in use, not the count: archived or deleted rows
+  // must not cause a collision with an index already taken.
+  const nextIndex = existing.reduce((max, row) => Math.max(max, row.wallet_index ?? 1), 0) + 1;
   const generated = ethers.Wallet.createRandom();
   const secret = encryptSecret(generated.privateKey);
   const createdAt = new Date().toISOString();
@@ -131,9 +177,29 @@ export async function createWallet(userId: number): Promise<{ wallet: UserWallet
     key_iv: secret.iv,
     key_tag: secret.authTag,
     created_at: createdAt,
+    label: label ?? null,
+    wallet_index: nextIndex,
+    // New wallets start inactive; setActiveWallet below promotes this one so
+    // only ever one row is active, matching the partial unique index.
+    is_active: false,
+    archived: false,
   });
+  await setActiveWallet(userId, nextIndex);
 
-  return { wallet: { address: generated.address, createdAt }, created: true };
+  return { address: generated.address, createdAt, index: nextIndex, label, active: true };
+}
+
+export async function setActiveWallet(userId: number, index: number): Promise<UserWallet> {
+  const target = await getWalletRowByIndex(userId, index);
+  if (!target) throw new Error(`You do not have a wallet #${index}.`);
+  await setActiveWalletRow(userId, index);
+  return { ...toWallet(target), active: true };
+}
+
+export async function renameWallet(userId: number, index: number, label: string): Promise<void> {
+  const target = await getWalletRowByIndex(userId, index);
+  if (!target) throw new Error(`You do not have a wallet #${index}.`);
+  await renameWalletRow(userId, index, label);
 }
 
 /** Decrypts the key and returns a signer. Keep the result short-lived. */

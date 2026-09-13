@@ -6,7 +6,7 @@ export async function analyzeDevActivity(profile: ProjectProfile): Promise<Crite
     return {
       criterion: "dev_activity",
       label: "Developer Activity",
-      findings: "No GitHub repository found for this project via CoinGecko's listed links.",
+      findings: "No GitHub repository found in this project's listed links.",
       confidence: "low",
     };
   }

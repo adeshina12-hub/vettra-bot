@@ -77,13 +77,13 @@ export async function findEmergingNftCollections(
   }
 
   if (!hasOpenSeaKey()) {
-    throw new Error("NFT search needs an OpenSea API key. Set OPENSEA_API_KEY in the backend environment.");
+    throw new Error("NFT search is not configured on this deployment yet.");
   }
 
   const { collections } = await listCollections({ orderBy: "seven_day_volume", limit: CANDIDATE_POOL });
   const candidates = collections.filter((item) => item.collection && !item.is_disabled && !item.is_nsfw);
   if (candidates.length === 0) {
-    throw new Error("OpenSea returned no collections to scan. Check the API key and try again.");
+    throw new Error("No collections came back for scanning. Please try again shortly.");
   }
 
   const rows = await mapLimit(candidates, 5, async (item): Promise<EmergingNftCollection | null> => {

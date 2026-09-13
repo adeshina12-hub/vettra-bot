@@ -116,6 +116,42 @@ create table if not exists bot_wallets (
 -- public API. RLS stays on with no policies, so only the service role reads it.
 alter table bot_wallets enable row level security;
 
+-- Multiple wallets per user. The original table keyed on telegram_user_id,
+-- which allowed exactly one; these statements migrate it in place and are safe
+-- to re-run. Existing rows keep their keys and become wallet #1.
+alter table bot_wallets add column if not exists id bigint generated always as identity;
+alter table bot_wallets add column if not exists label text;
+alter table bot_wallets add column if not exists wallet_index integer not null default 1;
+alter table bot_wallets add column if not exists is_active boolean not null default true;
+alter table bot_wallets add column if not exists archived boolean not null default false;
+
+-- Swap the primary key from the user id to the surrogate id, so one user can
+-- hold many rows. Guarded so re-running is a no-op.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.table_constraints
+    where table_name = 'bot_wallets' and constraint_name = 'bot_wallets_pkey'
+      and constraint_type = 'PRIMARY KEY'
+  ) and exists (
+    select 1 from information_schema.key_column_usage
+    where table_name = 'bot_wallets' and constraint_name = 'bot_wallets_pkey'
+      and column_name = 'telegram_user_id'
+  ) then
+    alter table bot_wallets drop constraint bot_wallets_pkey;
+    alter table bot_wallets add primary key (id);
+  end if;
+end $$;
+
+create index if not exists bot_wallets_user_idx on bot_wallets (telegram_user_id, wallet_index);
+
+-- Exactly one active wallet per user: the one /buy and /withdraw act on.
+create unique index if not exists bot_wallets_one_active_idx
+  on bot_wallets (telegram_user_id) where is_active and not archived;
+
+create unique index if not exists bot_wallets_user_index_idx
+  on bot_wallets (telegram_user_id, wallet_index);
+
 create table if not exists bot_research_events (
   id bigint generated always as identity primary key,
   telegram_user_id bigint not null,

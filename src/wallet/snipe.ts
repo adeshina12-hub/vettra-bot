@@ -84,7 +84,7 @@ export interface SnipeResult {
 
 export async function executeSnipe(userId: number, listing: NftListing, address: string): Promise<SnipeResult> {
   if (!listing.basic) {
-    throw new Error("This listing is an auction or a criteria offer, which the bot cannot fulfil directly. Open it on OpenSea to buy.");
+    throw new Error("This listing is an auction or a criteria offer, which the bot cannot fulfil directly. Open it on the marketplace to buy.");
   }
   if (!isTradableChain(listing.chain)) {
     const info = CHAINS[listing.chain as SupportedChain];
@@ -112,12 +112,12 @@ export async function executeSnipe(userId: number, listing: NftListing, address:
 
   const tx = payload?.fulfillment_data?.transaction;
   if (!tx?.to || !tx.function || !tx.input_data) {
-    throw new Error("OpenSea did not return fulfilment data for this listing. It may have just been bought or cancelled.");
+    throw new Error("Could not get fulfilment data for this listing. It may have just been bought or cancelled.");
   }
 
   const parameters = tx.input_data.parameters;
   if (!parameters || typeof parameters !== "object") {
-    throw new Error("OpenSea returned fulfilment data in an unexpected shape.");
+    throw new Error("Fulfilment data came back in an unexpected shape.");
   }
 
   // The order states its own total: the offerer's cut plus every fee
@@ -215,12 +215,12 @@ function orderTotal(parameters: Record<string, any>): bigint {
 function encodeFulfillment(functionSignature: string, parameters: Record<string, any>): string {
   const name = functionSignature.slice(0, functionSignature.indexOf("("));
   if (!name.startsWith("fulfillBasicOrder")) {
-    throw new Error(`Unsupported fulfilment method (${name}). Open this listing on OpenSea to buy it.`);
+    throw new Error(`Unsupported fulfilment method (${name}). Open this listing on the marketplace to buy it.`);
   }
 
   const ordered = BASIC_ORDER_FIELDS.map((field) => {
     const value = parameters[field];
-    if (value === undefined) throw new Error(`OpenSea fulfilment data is missing "${field}".`);
+    if (value === undefined) throw new Error(`Fulfilment data is missing "${field}".`);
     // additionalRecipients is a tuple array of (amount, recipient).
     if (field === "additionalRecipients") {
       return (value as Array<{ amount: string; recipient: string }>).map((item) => [item.amount, item.recipient]);

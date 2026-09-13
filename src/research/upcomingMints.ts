@@ -33,11 +33,12 @@ export interface UpcomingMint {
   telegram?: string;
 }
 
+// Deliberately carries no source URL: this object is returned as-is by the
+// research server's HTTP API, so any upstream reference here would leak.
 export interface UpcomingMintScanResult {
   mints: UpcomingMint[];
   total: number;
   dated: number;
-  source: string;
   fetchedAt: string;
 }
 
@@ -68,26 +69,27 @@ async function loadMints(): Promise<UpcomingMintScanResult> {
     response = await fetchWithTimeout(MINTDECK_URL, {
       headers: {
         // Without a browser-ish UA some hosts serve a challenge page instead.
-        "User-Agent": "Mozilla/5.0 (compatible; VettraBot/1.0; +https://mintdeck.fun)",
+        // Generic on purpose: no bot name, so the request does not advertise
+        // which product is consuming this source.
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
         Accept: "text/html,application/xhtml+xml",
       },
     }, 15_000);
   } catch (err) {
-    throw new Error(`Could not reach mintdeck.fun (${String(err)})`);
+    throw new Error(`The mint calendar is unreachable right now (${String(err)})`);
   }
-  if (!response.ok) throw new Error(`mintdeck.fun returned ${response.status}`);
+  if (!response.ok) throw new Error(`The mint calendar returned ${response.status}`);
 
   const html = await response.text();
   const mints = parseMints(html);
   if (mints.length === 0) {
-    throw new Error("No mints could be read from mintdeck.fun — the page layout may have changed.");
+    throw new Error("No upcoming mints could be read — the source layout may have changed.");
   }
 
   const result: UpcomingMintScanResult = {
     mints,
     total: mints.length,
     dated: mints.filter((mint) => mint.dated).length,
-    source: MINTDECK_URL,
     fetchedAt: new Date().toISOString(),
   };
   cache = { expiresAt: Date.now() + CACHE_MS, result };

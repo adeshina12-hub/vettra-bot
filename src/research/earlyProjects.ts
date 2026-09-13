@@ -88,7 +88,7 @@ async function discoverMoni(): Promise<EarlyCandidate[]> {
   if (!config.moni.apiKey) throw new Error("MONI_API_KEY is not configured");
   if (moniCache && Date.now() - moniCacheAt < MONI_CACHE_MS) return moniCache;
   const allowed = await reserveExternalApiRequests("moni", 1, config.moni.dailyRequestCap);
-  if (!allowed) throw new Error(`Moni daily request cap reached (${config.moni.dailyRequestCap})`);
+  if (!allowed) throw new Error(`Daily discovery limit reached (${config.moni.dailyRequestCap})`);
   const params = new URLSearchParams({
     feedTimeframe: process.env.MONI_FEED_TIMEFRAME ?? "D30",
     changesTimeframe: "H24",
@@ -100,7 +100,7 @@ async function discoverMoni(): Promise<EarlyCandidate[]> {
     minMlProjectPredictionPercents: "0",
   });
   const response = await fetchWithTimeout(`${MONI_URL}?${params}`, { headers: { "Api-Key": config.moni.apiKey, Accept: "application/json" } });
-  if (!response.ok) throw new Error(`Moni discovery failed: ${response.status}`);
+  if (!response.ok) throw new Error(`Discovery lookup failed (${response.status})`);
   const payload = await response.json() as { items?: any[] };
   moniCache = (payload.items ?? []).flatMap((item): EarlyCandidate[] => {
     const meta = item.meta ?? {};

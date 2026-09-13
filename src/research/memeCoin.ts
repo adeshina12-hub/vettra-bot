@@ -254,7 +254,7 @@ function scoreMemeCoin(market: MemeMarketSnapshot, security: MemeSecuritySnapsho
   // 7. Socials presence.
   const links = market.websites.length + market.socials.length;
   if (links >= 2) {
-    specs.push({ label: "Socials", status: "pass", detail: `${links} official links listed on DexScreener.`, delta: 3 });
+    specs.push({ label: "Socials", status: "pass", detail: `${links} official links listed.`, delta: 3 });
   } else if (links === 1) {
     specs.push({ label: "Socials", status: "warn", detail: "Only one official link listed.", delta: 0 });
   } else {
@@ -424,7 +424,7 @@ async function describeMemeCoin(
     `Age: ${market.ageHours !== undefined ? `${(market.ageHours / 24).toFixed(1)} days` : "unknown"}`,
     `Links: ${[...market.websites, ...market.socials].join(", ") || "none listed"}`,
     security
-      ? `Contract safety (GoPlus): ${JSON.stringify(security)}`
+      ? `Contract safety: ${JSON.stringify(security)}`
       : "Contract safety: no data available for this chain — unverified.",
     "",
     `Rule-based degen score: ${score}/100 (${rating})`,

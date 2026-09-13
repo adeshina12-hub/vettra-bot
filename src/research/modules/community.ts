@@ -43,7 +43,7 @@ export async function analyzeCommunity(profile: ProjectProfile): Promise<Criteri
     return {
       criterion: "community_quality",
       label: "Community Quality",
-      findings: "No community data available (no CoinGecko listing or no X handle resolved).",
+      findings: "No community data available (project not listed, or no X handle resolved).",
       confidence: "low",
     };
   }

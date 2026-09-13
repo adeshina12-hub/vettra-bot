@@ -6,7 +6,7 @@ export async function analyzeTokenomics(profile: ProjectProfile): Promise<Criter
     return {
       criterion: "tokenomics",
       label: "Tokenomics",
-      findings: "No CoinGecko listing resolved — cannot pull supply/market data.",
+      findings: "No market listing resolved — cannot pull supply/market data.",
       confidence: "low",
     };
   }

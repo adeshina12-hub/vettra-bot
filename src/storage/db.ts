@@ -293,22 +293,43 @@ export async function claimBotSnipeLookup(userId: number, dailyLimit: number): P
 // --- Custodial trading wallets ---
 
 export interface WalletRow {
+  id?: number;
   telegram_user_id: number;
   address: string;
   encrypted_key: string;
   key_iv: string;
   key_tag: string;
   created_at: string;
+  label?: string | null;
+  wallet_index?: number;
+  is_active?: boolean;
+  archived?: boolean;
 }
 
-export async function getWalletRow(userId: number): Promise<WalletRow | null> {
+/** Every wallet a user owns, oldest first. */
+export async function listWalletRows(userId: number): Promise<WalletRow[]> {
   const { data, error } = await supabase
     .from("bot_wallets")
     .select("*")
     .eq("telegram_user_id", userId)
-    .maybeSingle();
-  if (error) throw new Error(`Failed to load wallet: ${error.message}`);
-  return (data as WalletRow | null) ?? null;
+    .eq("archived", false)
+    .order("wallet_index", { ascending: true });
+  if (error) throw new Error(`Failed to load wallets: ${error.message}`);
+  return (data as WalletRow[] | null) ?? [];
+}
+
+/**
+ * The wallet /buy and /withdraw act on. Falls back to the first wallet if no
+ * row is flagged active, so a user is never left with wallets but no default.
+ */
+export async function getWalletRow(userId: number): Promise<WalletRow | null> {
+  const wallets = await listWalletRows(userId);
+  return wallets.find((row) => row.is_active) ?? wallets[0] ?? null;
+}
+
+export async function getWalletRowByIndex(userId: number, index: number): Promise<WalletRow | null> {
+  const wallets = await listWalletRows(userId);
+  return wallets.find((row) => (row.wallet_index ?? 1) === index) ?? null;
 }
 
 /**
@@ -318,6 +339,32 @@ export async function getWalletRow(userId: number): Promise<WalletRow | null> {
 export async function insertWalletRow(row: WalletRow): Promise<void> {
   const { error } = await supabase.from("bot_wallets").insert(row);
   if (error) throw new Error(`Failed to save wallet: ${error.message}`);
+}
+
+/** Makes one wallet active and deactivates the rest, in that order — the
+ * partial unique index allows only one active row per user at a time. */
+export async function setActiveWalletRow(userId: number, index: number): Promise<void> {
+  const clear = await supabase
+    .from("bot_wallets")
+    .update({ is_active: false })
+    .eq("telegram_user_id", userId);
+  if (clear.error) throw new Error(`Failed to switch wallet: ${clear.error.message}`);
+
+  const set = await supabase
+    .from("bot_wallets")
+    .update({ is_active: true })
+    .eq("telegram_user_id", userId)
+    .eq("wallet_index", index);
+  if (set.error) throw new Error(`Failed to switch wallet: ${set.error.message}`);
+}
+
+export async function renameWalletRow(userId: number, index: number, label: string): Promise<void> {
+  const { error } = await supabase
+    .from("bot_wallets")
+    .update({ label })
+    .eq("telegram_user_id", userId)
+    .eq("wallet_index", index);
+  if (error) throw new Error(`Failed to rename wallet: ${error.message}`);
 }
 
 async function claimBotAction(userId: number, query: string, eventType: string, dailyLimit: number): Promise<boolean> {

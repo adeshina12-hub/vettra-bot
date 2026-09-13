@@ -31,7 +31,7 @@ async function requestWithRetry<T>(path: string): Promise<T> {
     if (response.ok) return (await response.json()) as T;
 
     if (response.status !== 429 || attempt === MAX_RETRIES) {
-      throw new Error(`CoinGecko request failed: ${response.status}`);
+      throw new Error(`Market data request failed (${response.status})`);
     }
 
     const retryAfter = Number(response.headers.get("retry-after"));
@@ -41,5 +41,5 @@ async function requestWithRetry<T>(path: string): Promise<T> {
     await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, 8_000)));
   }
 
-  throw new Error("CoinGecko request failed after retries");
+  throw new Error("Market data request failed after retries");
 }

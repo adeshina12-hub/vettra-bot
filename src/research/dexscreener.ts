@@ -53,9 +53,9 @@ export async function fetchTokenPairs(address: string): Promise<DexScreenerPair[
       headers: { Accept: "application/json" },
     });
   } catch (err) {
-    throw new Error(`DexScreener is unreachable right now (${String(err)})`);
+    throw new Error(`Market data is unavailable right now (${String(err)})`);
   }
-  if (!response.ok) throw new Error(`DexScreener lookup failed: ${response.status}`);
+  if (!response.ok) throw new Error(`Market data lookup failed (${response.status})`);
 
   const payload = (await response.json()) as { pairs?: DexScreenerPair[] | null };
   const all = payload.pairs ?? [];

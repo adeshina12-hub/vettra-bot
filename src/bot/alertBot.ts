@@ -7,7 +7,7 @@ import { findDormantNftCollections, type DormantNftScanResult } from "../researc
 import { findEmergingNftCollections, type EmergingNftScanResult } from "../research/emergingNfts.js";
 import { findUpcomingMints, type UpcomingMintScanResult } from "../research/upcomingMints.js";
 import { grantAdmin, isAdmin, isOwner, listAdmins, refreshAdmins, revokeAdmin } from "./admins.js";
-import { createWallet, exportPrivateKey, getBalances, getWallet, isTradableChain, tradableChains, withdraw, type SupportedChain } from "../wallet/wallet.js";
+import { addWallet, createWallet, exportPrivateKey, getBalances, getWallet, isTradableChain, listWallets, renameWallet, setActiveWallet, tradableChains, withdraw, type SupportedChain } from "../wallet/wallet.js";
 import { executeSnipe } from "../wallet/snipe.js";
 import { CHAIN_LABELS, SELECTABLE_CHAINS, looksLikeNftContract, lookupNftByContract, type NftLookupResult } from "../research/nftLookup.js";
 import { claimBotEarlyScan, claimBotMemeScan, claimBotMintScan, claimBotNftScan, claimBotNftSearch, claimBotSnipeLookup, claimBotResearch, findBotUserByUsername, getBotAnalytics, getCachedReport, recordBotResearch, recordBotUser } from "../storage/db.js";
@@ -145,12 +145,10 @@ export function startUnifiedBot(): void {
     await runMintsCommand(ctx, limit);
   });
 
-  bot.hears("NFT snipe", async (ctx) => {
-    clearModes(ctx.chat.id);
-    await ctx.reply("🎯 Which chain is the NFT on?", chainMenu());
-  });
-
+  // NFT snipe is admin-only and command-only for now: no keyboard button, the
+  // same shape as /analytics and /nfts.
   bot.hears(/^Chain: (.+)$/, async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
     const label = ctx.message.text.replace(/^Chain: /, "").trim();
     clearModes(ctx.chat.id);
 
@@ -170,6 +168,7 @@ export function startUnifiedBot(): void {
   });
 
   bot.command("snipe", async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
     const [address, chainArg] = getCommandArgs(ctx.message.text).split(/\s+/);
     if (!address) {
       clearModes(ctx.chat.id);
@@ -188,6 +187,7 @@ export function startUnifiedBot(): void {
   });
 
   bot.command("buy", async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
     const index = Number(getCommandArgs(ctx.message.text) || "1");
     if (!Number.isInteger(index) || index < 1 || index > 5) {
       await ctx.reply("Usage: /buy <1-5> — the number next to the listing you want.");
@@ -208,6 +208,58 @@ export function startUnifiedBot(): void {
 
   bot.command("balance", async (ctx) => {
     await runWalletCommand(ctx);
+  });
+
+  bot.command("newwallet", async (ctx) => {
+    try {
+      const label = getCommandArgs(ctx.message.text).slice(0, 40) || undefined;
+      // Ensure wallet #1 exists first, so a brand-new user asking for a second
+      // wallet does not end up with a single wallet numbered #2.
+      await createWallet(ctx.from.id);
+      const wallet = await addWallet(ctx.from.id, label);
+      await ctx.reply(
+        `✅ ${escapeMd(`Wallet ${wallet.index}${wallet.label ? ` (${wallet.label})` : ""} created and set active.`)}\n\n` +
+        `\`${wallet.address}\`\n\n` +
+        escapeMd("Fund it with /deposit. Switch wallets any time with /use <number>."),
+        { parse_mode: "MarkdownV2", ...mainMenu() },
+      );
+    } catch (err) {
+      await ctx.reply(walletErrorMessage(err), mainMenu());
+    }
+  });
+
+  bot.command("use", async (ctx) => {
+    const index = Number(getCommandArgs(ctx.message.text));
+    if (!Number.isInteger(index) || index < 1) {
+      await ctx.reply("Usage: /use <number> — the number shown next to the wallet in /wallet.");
+      return;
+    }
+    try {
+      const wallet = await setActiveWallet(ctx.from.id, index);
+      await ctx.reply(
+        `✅ ${escapeMd(`Wallet ${wallet.index}${wallet.label ? ` (${wallet.label})` : ""} is now active.`)}\n\n\`${wallet.address}\`\n\n` +
+        escapeMd("Trades and withdrawals will use this wallet."),
+        { parse_mode: "MarkdownV2", ...mainMenu() },
+      );
+    } catch (err) {
+      await ctx.reply(walletErrorMessage(err), mainMenu());
+    }
+  });
+
+  bot.command("rename", async (ctx) => {
+    const [rawIndex, ...rest] = getCommandArgs(ctx.message.text).split(/\s+/);
+    const index = Number(rawIndex);
+    const label = rest.join(" ").slice(0, 40);
+    if (!Number.isInteger(index) || index < 1 || !label) {
+      await ctx.reply("Usage: /rename <number> <name>\n\nExample: /rename 2 Sniping wallet");
+      return;
+    }
+    try {
+      await renameWallet(ctx.from.id, index, label);
+      await ctx.reply(`✅ Wallet ${index} renamed to "${label}".`, mainMenu());
+    } catch (err) {
+      await ctx.reply(walletErrorMessage(err), mainMenu());
+    }
   });
 
   bot.command("deposit", async (ctx) => {
@@ -480,8 +532,8 @@ function mainMenu(back = false) {
   return Markup.keyboard([
     ["Early projects", "Meme coin scan"],
     ["NFT search", "Upcoming mints"],
-    ["NFT snipe", "Wallet"],
-    ["Research a project", "Help"],
+    ["Research a project", "Wallet"],
+    ["Help"],
     ...(back ? [["Back to menu"]] : []),
   ]).resize().persistent();
 }
@@ -567,22 +619,22 @@ function welcomeMessage(): string {
 function helpMessage(userId?: number): string {
   const base = "💡 *How I can help*\n\n" +
     "🌱 *Early projects*\nScan for promising early builders.\n\n" +
-    "🐸 *Meme coin scan*\nPaste any token contract address and I will pull its live DexScreener price, market cap, FDV, and liquidity, run contract-safety checks (honeypot, LP lock, mint authority, whale concentration), and give you a degen verdict.\n\n" +
+    "🐸 *Meme coin scan*\nPaste any token contract address and I will pull its live price, market cap, FDV, and liquidity, run contract-safety checks (honeypot, LP lock, mint authority, whale concentration), and give you a degen verdict.\n\n" +
     "🔎 *Research a project*\nSend a name or ticker and I will return a scored research verdict, strengths, and red flags.\n\n" +
-    "🔭 *NFT search*\nEarly OpenSea collections that are still small but already picking up real trading traction, scored 0-100 on potential — with their X handle and website.\n\n" +
-    "🗓 *Upcoming mints*\nNFT mints that have not happened yet, pulled live from Mint Deck with date, supply, price and socials.\n\n" +
-    "🎯 *NFT snipe*\nPaste an NFT contract address to see its floor, volume, owners and cheapest live listings, then buy straight from your bot wallet. Links to OpenSea, Blur, Magic Eden, Element and OKX too.\n\n" +
-    "👛 *Wallet*\nA trading wallet on Base and BNB Chain, created for you here. Fund it, check balances, and withdraw any time.\n\n" +
+    "🔭 *NFT search*\nEarly NFT collections that are still small but already picking up real trading traction, scored 0-100 on potential — with their X handle and website.\n\n" +
+    "🗓 *Upcoming mints*\nNFT mints that have not happened yet, with date, supply, price and socials.\n\n" +
+    "👛 *Wallet*\nA trading wallet on Base, BNB Chain and Robinhood Chain, created for you here. Fund it, check balances, and withdraw any time.\n\n" +
     "Every scan lets you pick how many results you want, and shows different ones each time.\n\n" +
     "Shortcuts: /early [1-10] · /meme <contract> · /research <name> · /nftsearch [1-10] · /mints [1-10]\n" +
-    "Wallet: /wallet · /deposit · /withdraw <base or bsc> <address> <amount or max> · /export";
+    "Wallet: /wallet · /newwallet [name] · /use <number> · /rename <number> <name> · /deposit · /withdraw <chain> <address> <amount or max> · /export";
 
   if (!isAdmin(userId)) return base;
 
   return base + "\n\n" +
-    "🔒 *Admin only* (no buttons, commands only)\n" +
+    "🔒 *Admin only* (no buttons, commands only)\n\n" +
     "🖼 *Dormant NFTs* — /nfts [1-10]\nBlue-chip collections that traded huge volume historically but have gone quiet, with their X handle and website.\n\n" +
-    "Admin commands: /nfts [1-10] · /analytics · /admins · /addadmin <id or @user> · /removeadmin <id or @user>";
+    "🎯 *NFT snipe* — /snipe\nPaste an NFT contract address to see its floor, volume, owners and cheapest live listings, then buy straight from the bot wallet with /buy <1-5>. Plus direct links to the major marketplaces.\n\n" +
+    "Admin commands: /nfts [1-10] · /snipe [address] [chain] · /buy <1-5> · /analytics · /admins · /addadmin <id or @user> · /removeadmin <id or @user>";
 }
 
 function memeModeMessage(): string {
@@ -671,7 +723,7 @@ async function runMemeCommand(ctx: {
   }
   if (!looksLikeContractAddress(address)) {
     await ctx.reply(
-      "That does not look like a contract address.\n\nSend an EVM address starting with 0x, or a Solana mint address. You can copy it from the DexScreener page of the token.",
+      "That does not look like a contract address.\n\nSend an EVM address starting with 0x, or a Solana mint address. You can copy it from the token's chart or explorer page.",
       mainMenu(true),
     );
     return;
@@ -731,7 +783,7 @@ async function runNftCommand(ctx: {
       return;
     }
 
-    await ctx.reply("🖼 Checking OpenSea for blue chips that have gone quiet...");
+    await ctx.reply("🖼 Checking for blue chips that have gone quiet...");
     const scan = await findDormantNftCollections(limit, { offset: takeOffset("nfts", ctx.from.id, limit) });
     await ctx.reply(formatNftScan(scan), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
   } catch (err) {
@@ -757,7 +809,7 @@ async function runNftSearchCommand(ctx: {
       return;
     }
 
-    await ctx.reply("🔭 Scanning OpenSea for early collections picking up traction...");
+    await ctx.reply("🔭 Scanning for early collections picking up traction...");
     const scan = await findEmergingNftCollections(limit, { offset: takeOffset("nftsearch", ctx.from.id, limit) });
     await ctx.reply(formatNftSearch(scan), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
   } catch (err) {
@@ -783,7 +835,7 @@ async function runMintsCommand(ctx: {
       return;
     }
 
-    await ctx.reply("🗓 Pulling upcoming mints from Mint Deck...");
+    await ctx.reply("🗓 Pulling the upcoming mint calendar...");
     const scan = await findUpcomingMints(limit, { offset: takeOffset("mints", ctx.from.id, limit) });
     await ctx.reply(formatMints(scan), { parse_mode: "MarkdownV2", disable_web_page_preview: true, ...mainMenu() });
   } catch (err) {
@@ -801,6 +853,7 @@ async function runNftSnipeLookup(ctx: {
     await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
     return;
   }
+  if (!(await requireAdmin(ctx))) return;
   if (!looksLikeNftContract(rawAddress)) {
     await ctx.reply("That does not look like an NFT contract address. Send an EVM address starting with 0x.", mainMenu(true));
     return;
@@ -836,6 +889,7 @@ async function runNftBuy(ctx: {
     await ctx.reply("I could not identify your Telegram account. Please try again.", mainMenu());
     return;
   }
+  if (!(await requireAdmin(ctx))) return;
 
   const lookup = lastSnipeLookup.get(ctx.from.id);
   if (!lookup) {
@@ -975,26 +1029,45 @@ async function runWalletCommand(ctx: {
   }
 
   try {
-    const { wallet, created } = await createWallet(ctx.from.id);
-    const balances = await getBalances(wallet.address);
+    const { created } = await createWallet(ctx.from.id);
+    const wallets = await listWallets(ctx.from.id);
+    const active = wallets.find((item) => item.active) ?? wallets[0];
+    // Balances only for the active wallet: pricing every wallet on every
+    // chain would be N x M RPC calls on a command people run constantly.
+    const balances = active ? await getBalances(active.address) : [];
 
     const lines = [
-      created ? "🎉 *Your trading wallet is ready*" : "👛 *Your trading wallet*",
-      `\`${wallet.address}\``,
+      created ? "🎉 *Your trading wallet is ready*" : `👛 *Your wallets* \\(${wallets.length}\\)`,
       "",
-      ...balances.map((item) =>
-        `${escapeMd(item.chain.name)}: *${escapeMd(trimBalance(item.balance))} ${escapeMd(item.chain.symbol)}*${item.error ? " ⚠️" : ""}`
-      ),
+    ];
+
+    for (const item of wallets) {
+      // Always lead with the number: /use <number> is how you switch, so a
+      // wallet shown only by its custom name would be impossible to select.
+      const name = `${item.index}\\. ${item.label ? escapeMd(item.label) : `Wallet ${item.index}`}`;
+      lines.push(`${item.active ? "✅" : "▫️"} *${name}*${item.active ? escapeMd(" — active") : ""}`);
+      lines.push(`\`${item.address}\``);
+    }
+
+    if (balances.length) {
+      lines.push("", escapeMd("Balance of the active wallet:"));
+      for (const item of balances) {
+        lines.push(`${escapeMd(item.chain.name)}: *${escapeMd(trimBalance(item.balance))} ${escapeMd(item.chain.symbol)}*${item.error ? " ⚠️" : ""}`);
+      }
+    }
+
+    lines.push(
       "",
       // Escaped programmatically rather than by hand: these lines contain
       // <angle brackets> and pipes, and hand-escaping missed ">" (which
       // MarkdownV2 reserves for blockquotes) and broke the whole message.
-      escapeMd("Fund it by sending ETH on Base or BNB on BNB Chain to the address above."),
-      "",
-      escapeMd("/deposit — show the address again"),
-      escapeMd("/withdraw <base|bsc> <address> <amount|max>"),
-      escapeMd("/export — reveal your private key"),
-    ];
+      escapeMd("/newwallet [name] — create another wallet"),
+      escapeMd("/use <number> — switch the active wallet"),
+      escapeMd("/rename <number> <name> — name a wallet"),
+      escapeMd("/deposit — show the active address"),
+      escapeMd("/withdraw <chain> <address> <amount|max>"),
+      escapeMd("/export — reveal the active private key"),
+    );
 
     if (created) {
       lines.push(
@@ -1043,7 +1116,7 @@ export function formatMints(scan: UpcomingMintScanResult): string {
 
   const header =
     "🗓 *Upcoming NFT mints*\n" +
-    escapeMd(`${scan.total} listed on Mint Deck, ${scan.dated} with a confirmed date.`);
+    escapeMd(`${scan.total} upcoming mints tracked, ${scan.dated} with a confirmed date.`);
 
   const entries = scan.mints.map((mint) => {
     const links = [
@@ -1061,8 +1134,9 @@ export function formatMints(scan: UpcomingMintScanResult): string {
     ].join("\n");
   });
 
+  // No "browse the full list" link: it would point straight at the upstream
+  // source this data is aggregated from.
   const footer =
-    `[Browse all on Mint Deck](${escapeUrl(scan.source)})\n` +
     "_Dates and prices are as published by the projects and change often\\. Always confirm on the official account before minting\\._";
 
   return truncateMessage([header, ...entries, footer].join("\n\n"));
@@ -1081,7 +1155,7 @@ export function formatNftSearch(scan: EmergingNftScanResult): string {
     const links = [
       item.twitterUrl ? `[X](${escapeUrl(item.twitterUrl)})` : null,
       item.website ? `[Website](${escapeUrl(item.website)})` : null,
-      `[OpenSea](${escapeUrl(item.openseaUrl)})`,
+      `[View collection](${escapeUrl(item.openseaUrl)})`,
     ].filter(Boolean).join(" · ");
 
     return [
@@ -1112,7 +1186,7 @@ export function formatNftScan(scan: DormantNftScanResult): string {
     const links = [
       item.twitterUrl ? `[X](${escapeUrl(item.twitterUrl)})` : null,
       item.website ? `[Website](${escapeUrl(item.website)})` : null,
-      `[OpenSea](${escapeUrl(item.openseaUrl)})`,
+      `[View collection](${escapeUrl(item.openseaUrl)})`,
     ].filter(Boolean).join(" · ");
 
     const lines = [
@@ -1120,7 +1194,7 @@ export function formatNftScan(scan: DormantNftScanResult): string {
       escapeMd(item.summary),
       `💰 Floor: ${escapeMd(eth(item.floorPriceEth))} · 👥 ${escapeMd((item.owners ?? 0).toLocaleString())} owners`,
       `📉 24h: ${escapeMd(`${item.volume24hEth.toFixed(2)} ETH / ${item.sales24h} sales`)}${item.athChangePct !== undefined ? ` · ${escapeMd(`${item.athChangePct.toFixed(0)}% from ATH`)}` : ""}`,
-      item.twitterHandle ? `🐦 X: @${escapeMd(item.twitterHandle)}` : "🐦 X: not listed on OpenSea",
+      item.twitterHandle ? `🐦 X: @${escapeMd(item.twitterHandle)}` : "🐦 X: not listed",
       item.website ? `🌐 ${escapeMd(item.website)}` : "🌐 Website: not listed",
       links,
     ];
@@ -1185,7 +1259,7 @@ export function formatMemeReport(report: MemeCoinReport): string {
     sections.push(`*Red flags*\n${report.redFlags.map((item) => `• ${escapeMd(item)}`).join("\n")}`);
   }
   sections.push(`*Sizing*\n${escapeMd(report.positionSizing)}`);
-  sections.push(`[Open on DexScreener](${escapeUrl(market.pairUrl)})`);
+  sections.push(`[View chart](${escapeUrl(market.pairUrl)})`);
   sections.push(`_${escapeMd(report.disclaimer)}_`);
 
   return truncateMessage(sections.join("\n\n"));
